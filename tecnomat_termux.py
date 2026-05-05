@@ -172,24 +172,16 @@ def extract_aisle(document: Dict[str, Any], store_slug: str) -> str:
 
 def format_product(document: Dict[str, Any], store_slug: str) -> str:
     name = pick_first(document, ["name", "nome"])
-    sku = pick_first(document, ["sku", "codice", "id"])
     price = extract_price(document)
     qty = extract_quantity(document)
-    delivery_pickup = parse_json_if_string(document.get("delivery_pickup", ""))
-    pickup = ""
-    if isinstance(delivery_pickup, dict) and "pickup" in delivery_pickup:
-        pickup = "Si" if str(delivery_pickup["pickup"]) in ("1", "true", "True") else "No"
 
     url = pick_first(document, ["url", "product_url", "link"], default="")
 
     lines = [
         f"- Nome: {name}",
-        f"  SKU: {sku}",
         f"  Prezzo: {price}",
         f"  Quantita disponibile: {qty}",
     ]
-    if pickup:
-        lines.append(f"  Ritiro in negozio: {pickup}")
     if url:
         lines.append(f"  URL: {url}")
 
