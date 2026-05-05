@@ -279,19 +279,33 @@ def fetch_product_html(url: str, cookie_header: str = "", retries: int = 2) -> s
 
 
 def extract_aisle_from_html(html: str) -> str:
+    # 1. Filtro Antigravity: Controllo indisponibilità totale
+    html_lower = html.lower()
+    if "non è disponibile in questo negozio" in html_lower or "ci dispiace" in html_lower:
+        return "Esaurito (Non disponibile a Rimini)"
+
     if BeautifulSoup:
         soup = BeautifulSoup(html, 'html.parser')
+        
+        # 2. Caccia all'ubicazione
         lane_div = soup.find('div', class_='product-heading-lane')
         if lane_div:
             value_div = lane_div.find('div', class_='product-heading__elem-label__value')
             if value_div:
-                raw_text = value_div.get_text(strip=True)
-                match = re.search(r'Corsia\s+(\d+)', raw_text, re.IGNORECASE)
-                if match:
-                    return match.group(1)
-                return raw_text
+                raw_text = value_div.get_text(separator=" ", strip=True)
+                
+                # Cerca prima la Corsia specifica
+                match_corsia = re.search(r'Corsia\s+(\d+)', raw_text, re.IGNORECASE)
+                if match_corsia:
+                    return match_corsia.group(1)
+                
+                # Se non c'è corsia, pulisci il testo e restituisci il Reparto/Perimetro
+                clean_test = re.sub(r'\s+', ' ', raw_text).strip()
+                return f"Solo Reparto: {clean_test}"
 
-    # Cerca prima il blocco lane dedicato in PDP. Fallback regex.
+        return "Ubicazione non dichiarata nel DOM"
+
+    # Fallback regex se BeautifulSoup non è installato
     lane_block = re.search(
         r'<div[^>]*class="[^"]*product-heading-lane[^"]*"[^>]*>(.*?)</div>\s*</div>',
         html,
@@ -299,23 +313,20 @@ def extract_aisle_from_html(html: str) -> str:
     )
     scope = lane_block.group(1) if lane_block else html
 
-    # Estrazione robusta da testo tipo: "Reparto VERNICI - Corsia 22"
     match = re.search(r"Corsia\s*([A-Za-z0-9\-_/]+)", scope, flags=re.IGNORECASE)
     if match:
         return match.group(1).strip()
-
-    return ""
-
-
-def extract_lane_text_from_html(html: str) -> str:
-    match = re.search(
+    
+    match_reparto = re.search(
         r'In negozio:\s*</div>\s*<div[^>]*class="[^"]*product-heading__elem-label__value[^"]*"[^>]*>\s*([^<]+)\s*</div>',
         html,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    if not match:
-        return ""
-    return re.sub(r"\s+", " ", match.group(1)).strip()
+    if match_reparto:
+        clean_text = re.sub(r"\s+", " ", match_reparto.group(1)).strip()
+        return f"Solo Reparto: {clean_text}"
+
+    return "Ubicazione non trovata"
 
 
 def resolve_aisle_with_html_fallback(document: Dict[str, Any], store_slug: str, cookie_header: str = "") -> str:
@@ -347,13 +358,7 @@ def resolve_aisle_from_pdp(document: Dict[str, Any], cookie_header: str = "") ->
     except Exception as e:
         return f"Non disponibile (errore fetch PDP: {e})"
 
-    lane_text = extract_lane_text_from_html(html)
-    aisle = extract_aisle_from_html(html)
-    if aisle:
-        return aisle
-    if lane_text:
-        return lane_text
-    return "Non disponibile in PDP"
+    return extract_aisle_from_html(html)
 
 
 def format_product(document: Dict[str, Any], store_slug: str, aisle: str) -> str:
