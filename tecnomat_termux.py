@@ -44,13 +44,14 @@ def env(name: str, required: bool = True, default: str = "") -> str:
     return value
 
 
-def build_url(base_url: str, collection: str, query: str, per_page: int) -> str:
+def build_url(base_url: str, collection: str, query: str, per_page: int, page: int = 1) -> str:
     base = base_url.rstrip("/")
     path = f"/collections/{collection}/documents/search"
     params = {
         "q": query,
         "query_by": "name",
         "per_page": str(per_page),
+        "page": str(page),
     }
     return f"{base}{path}?{urllib.parse.urlencode(params)}"
 
@@ -211,9 +212,7 @@ def main() -> None:
     args = parser.parse_args()
 
     per_page = max(1, min(args.num_results, 50))
-    fetch_per_page = per_page
-    if not args.show_zero_stock:
-        fetch_per_page = min(50, max(per_page * 3, per_page))
+    fetch_per_page = min(50, max(per_page, 20))
     query = " ".join(args.query).strip()
 
     typesense_url = env("TYPESENSE_URL")
@@ -221,12 +220,19 @@ def main() -> None:
     typesense_collection = env("TYPESENSE_COLLECTION")
     store_slug = env("TECNOMAT_STORE_SLUG", required=False, default="rimini")
 
-    url = build_url(typesense_url, typesense_collection, query, fetch_per_page)
-    payload = fetch_typesense(url, typesense_key)
-
-    hits = payload.get("hits", [])
-    if not args.show_zero_stock:
-        hits = [h for h in hits if parse_quantity_value(h.get("document", {})) != 0]
+    hits = []
+    max_pages = 10
+    for page in range(1, max_pages + 1):
+        url = build_url(typesense_url, typesense_collection, query, fetch_per_page, page=page)
+        payload = fetch_typesense(url, typesense_key)
+        page_hits = payload.get("hits", [])
+        if not page_hits:
+            break
+        if not args.show_zero_stock:
+            page_hits = [h for h in page_hits if parse_quantity_value(h.get("document", {})) != 0]
+        hits.extend(page_hits)
+        if len(hits) >= per_page:
+            break
     hits = hits[:per_page]
 
     if not hits:
