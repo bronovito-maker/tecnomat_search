@@ -2,11 +2,23 @@
 import json
 import argparse
 import os
+import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List
+
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 
 DEFAULT_PER_PAGE = 10
@@ -44,15 +56,25 @@ def env(name: str, required: bool = True, default: str = "") -> str:
     return value
 
 
-def build_url(base_url: str, collection: str, query: str, per_page: int, page: int = 1) -> str:
+def build_url(
+    base_url: str,
+    collection: str,
+    query: str,
+    per_page: int,
+    page: int = 1,
+    query_by: str = "name",
+    filter_by: str = "",
+) -> str:
     base = base_url.rstrip("/")
     path = f"/collections/{collection}/documents/search"
     params = {
         "q": query,
-        "query_by": "name",
+        "query_by": query_by,
         "per_page": str(per_page),
         "page": str(page),
     }
+    if filter_by:
+        params["filter_by"] = filter_by
     return f"{base}{path}?{urllib.parse.urlencode(params)}"
 
 
@@ -96,6 +118,16 @@ def parse_json_if_string(value: Any) -> Any:
         except Exception:
             return value
     return value
+
+
+def get_nested_value(obj: Any, path: List[str]) -> Any:
+    cur = obj
+    for part in path:
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+            continue
+        return None
+    return cur
 
 
 def format_eur(value: Any) -> str:
@@ -160,18 +192,171 @@ def parse_quantity_value(document: Dict[str, Any]) -> int:
 
 
 def extract_aisle(document: Dict[str, Any], store_slug: str) -> str:
-    # Campo corsia non presente nei sample attuali dell'indice.
-    aisle = pick_first(
-        document,
-        [f"corsia_{store_slug}", "corsia", "aisle", "scaffale"],
-        default="",
-    )
-    if aisle not in ("", "N/D"):
+    direct = [
+        f"corsia_{store_slug}",
+        f"aisle_{store_slug}",
+        "corsia",
+        "aisle",
+        "aisle_number",
+        "location_aisle",
+        "scaffale",
+    ]
+    aisle = pick_first(document, direct, default="")
+    if aisle not in ("", "N/D", None):
         return str(aisle)
+
+    nested_paths = [
+        ["store_specific_data", store_slug, "location_aisle"],
+        ["store_specific_data", store_slug, "aisle_number"],
+        ["availability_by_store", store_slug, "location_aisle"],
+        ["availability_by_store", store_slug, "aisle_number"],
+        ["stores", store_slug, "location_aisle"],
+        ["stores", store_slug, "aisle_number"],
+    ]
+    for key in ["store_specific_data", "availability_by_store", "stores"]:
+        if key in document:
+            document[key] = parse_json_if_string(document[key])
+    for path in nested_paths:
+        value = get_nested_value(document, path)
+        if value not in (None, ""):
+            return str(value)
+
     return "Non disponibile nell'indice corrente"
 
 
-def format_product(document: Dict[str, Any], store_slug: str) -> str:
+def build_store_cookie(base_cookie: str, store_id: str) -> str:
+    parts = []
+    if base_cookie:
+        parts.append(base_cookie.strip().strip(";"))
+    if store_id:
+        parts.append(f"bricoman_retailer_shop_id={store_id}")
+        parts.append(f"bricoman_previous_shop_id={store_id}")
+    return "; ".join([p for p in parts if p])
+
+
+def fetch_product_html(url: str, cookie_header: str = "", retries: int = 2) -> str:
+    base_headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua-Mobile": "?1",
+        "Sec-Ch-Ua-Platform": '"Android"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    last_exc: Exception | None = None
+    for i in range(retries + 1):
+        headers = dict(base_headers)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+            
+        try:
+            if curl_requests:
+                # Il Fantasma TLS: bypass DataDome impersonando Chrome 110
+                response = curl_requests.get(url, headers=headers, impersonate="chrome110", timeout=15)
+                if response.status_code == 200:
+                    return response.text
+                else:
+                    raise RuntimeError(f"HTTP {response.status_code}")
+            else:
+                # Fallback standard se curl_cffi non è installato
+                req = urllib.request.Request(url, method="GET", headers=headers)
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    return response.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            last_exc = e
+            if i < retries:
+                time.sleep(0.5)
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Errore sconosciuto fetch_product_html")
+
+
+def extract_aisle_from_html(html: str) -> str:
+    if BeautifulSoup:
+        soup = BeautifulSoup(html, 'html.parser')
+        lane_div = soup.find('div', class_='product-heading-lane')
+        if lane_div:
+            value_div = lane_div.find('div', class_='product-heading__elem-label__value')
+            if value_div:
+                raw_text = value_div.get_text(strip=True)
+                match = re.search(r'Corsia\s+(\d+)', raw_text, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+                return raw_text
+
+    # Cerca prima il blocco lane dedicato in PDP. Fallback regex.
+    lane_block = re.search(
+        r'<div[^>]*class="[^"]*product-heading-lane[^"]*"[^>]*>(.*?)</div>\s*</div>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    scope = lane_block.group(1) if lane_block else html
+
+    # Estrazione robusta da testo tipo: "Reparto VERNICI - Corsia 22"
+    match = re.search(r"Corsia\s*([A-Za-z0-9\-_/]+)", scope, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    return ""
+
+
+def extract_lane_text_from_html(html: str) -> str:
+    match = re.search(
+        r'In negozio:\s*</div>\s*<div[^>]*class="[^"]*product-heading__elem-label__value[^"]*"[^>]*>\s*([^<]+)\s*</div>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def resolve_aisle_with_html_fallback(document: Dict[str, Any], store_slug: str, cookie_header: str = "") -> str:
+    aisle = extract_aisle(document, store_slug)
+    if aisle != "Non disponibile nell'indice corrente":
+        return aisle
+
+    url = str(pick_first(document, ["url", "product_url", "link"], default="")).strip()
+    if not url:
+        return aisle
+
+    try:
+        html = fetch_product_html(url, cookie_header=cookie_header)
+        parsed = extract_aisle_from_html(html)
+        if parsed:
+            return parsed
+    except Exception:
+        return aisle
+
+    return aisle
+
+
+def resolve_aisle_from_pdp(document: Dict[str, Any], cookie_header: str = "") -> str:
+    url = str(pick_first(document, ["url", "product_url", "link"], default="")).strip()
+    if not url:
+        return "URL prodotto non disponibile"
+    try:
+        html = fetch_product_html(url, cookie_header=cookie_header)
+    except Exception as e:
+        return f"Non disponibile (errore fetch PDP: {e})"
+
+    lane_text = extract_lane_text_from_html(html)
+    aisle = extract_aisle_from_html(html)
+    if aisle:
+        return aisle
+    if lane_text:
+        return lane_text
+    return "Non disponibile in PDP"
+
+
+def format_product(document: Dict[str, Any], store_slug: str, aisle: str) -> str:
     name = pick_first(document, ["name", "nome"])
     price = extract_price(document)
     qty = extract_quantity(document)
@@ -182,6 +367,7 @@ def format_product(document: Dict[str, Any], store_slug: str) -> str:
         f"- Nome: {name}",
         f"  Prezzo: {price}",
         f"  Quantita disponibile: {qty}",
+        f"  Corsia ({store_slug.title()}): {aisle}",
     ]
     if url:
         lines.append(f"  URL: {url}")
@@ -209,6 +395,16 @@ def main() -> None:
         action="store_true",
         help="Mostra anche prodotti con quantita disponibile uguale a 0",
     )
+    parser.add_argument(
+        "--debug-fields",
+        action="store_true",
+        help="Stampa il JSON raw del primo hit per ispezionare i campi reali dell'indice",
+    )
+    parser.add_argument(
+        "--resolve-aisle-html",
+        action="store_true",
+        help="Se la corsia non e in Typesense, prova a estrarla dalla pagina prodotto (SSR)",
+    )
     args = parser.parse_args()
 
     per_page = max(1, min(args.num_results, 50))
@@ -219,11 +415,24 @@ def main() -> None:
     typesense_key = env("TYPESENSE_API_KEY")
     typesense_collection = env("TYPESENSE_COLLECTION")
     store_slug = env("TECNOMAT_STORE_SLUG", required=False, default="rimini")
+    query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
+    filter_by = env("TYPESENSE_FILTER_BY", required=False, default="")
+    store_cookie = env("TECNOMAT_STORE_COOKIE", required=False, default="")
+    store_id = env("TECNOMAT_STORE_ID", required=False, default="")
+    effective_cookie = build_store_cookie(store_cookie, store_id)
 
     hits = []
     max_pages = 10
     for page in range(1, max_pages + 1):
-        url = build_url(typesense_url, typesense_collection, query, fetch_per_page, page=page)
+        url = build_url(
+            typesense_url,
+            typesense_collection,
+            query,
+            fetch_per_page,
+            page=page,
+            query_by=query_by,
+            filter_by=filter_by,
+        )
         payload = fetch_typesense(url, typesense_key)
         page_hits = payload.get("hits", [])
         if not page_hits:
@@ -244,7 +453,16 @@ def main() -> None:
     print(f"Risultati per: {query}\n")
     for idx, hit in enumerate(hits, start=1):
         doc = hit.get("document", {})
-        print(f"{idx}. {format_product(doc, store_slug)}\n")
+        # Fonte primaria: PDP SSR (piu stabile del solo indice Typesense per la corsia)
+        aisle = resolve_aisle_from_pdp(doc, cookie_header=effective_cookie)
+        print(f"{idx}. {format_product(doc, store_slug, aisle)}\n")
+
+    if args.debug_fields:
+        first_doc = hits[0].get("document", {})
+        print("--- DEBUG FIRST HIT (RAW DOCUMENT) ---")
+        print(json.dumps(first_doc, ensure_ascii=False, indent=2, sort_keys=True))
+        print("--- END DEBUG ---")
+
     print_quick_tips()
 
 

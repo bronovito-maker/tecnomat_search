@@ -76,6 +76,36 @@ Shortcut disponibili:
   lo script prova piu alias comuni.
 - Se vuoi risultati piu precisi per il solo negozio di Rimini, possiamo aggiungere un filtro Typesense dedicato (`filter_by`) in base ai campi reali del tuo indice.
 
+Configurazioni opzionali utili:
+- `TYPESENSE_QUERY_BY`: default `name` (es: `name,sku,mpn`)
+- `TYPESENSE_FILTER_BY`: filtro Typesense puro (es: `store_id:=116`)
+- `TECNOMAT_STORE_SLUG`: usato per risolvere i campi corsia store-specifici (default: `rimini`)
+- `TECNOMAT_STORE_ID`: store Tecnomat per PDP SSR (Rimini: `39`)
+- `TECNOMAT_STORE_COOKIE`: cookie completo opzionale del browser, per allineare la sessione reale
+
+La corsia viene estratta in modo primario dalla PDP SSR (`In negozio: Reparto ... - Corsia XX`).
+Typesense resta usato per la ricerca veloce prodotto, non per la corsia.
+
+Per forzare Rimini:
+
+```bash
+TECNOMAT_STORE_ID=39 tecnomat --resolve-aisle-html "silicone bagno"
+```
+
+Se vuoi massima stabilita con la stessa sessione browser:
+
+```bash
+TECNOMAT_STORE_COOKIE='cookie1=...; cookie2=...' TECNOMAT_STORE_ID=39 tecnomat --resolve-aisle-html "silicone bagno"
+```
+
+Comando base:
+
+```bash
+tecnomat --resolve-aisle-html "silicone bagno"
+```
+
+Il fallback legge la PDP del prodotto e cerca il blocco `In negozio: Reparto ... - Corsia XX`.
+
 ## Enrichment corsia Rimini (consigliato)
 
 Per avere `Corsia (Rimini)` affidabile in CLI, arricchisci l'indice con i campi:
@@ -113,3 +143,13 @@ tecnomat "silicone bagno"
 ```
 
 Se il prodotto ha lo SKU aggiornato, vedrai `Corsia (Rimini): 22` (o il valore che hai inserito).
+## Bypass DataDome con curl_cffi
+
+Lo script utilizza `curl_cffi` per emulare il fingerprint TLS di Chrome 110, bypassando nativamente i controlli DataDome senza bisogno di pesanti browser headless.
+
+### Requisiti
+In ambiente Termux, assicurarsi di installare le librerie necessarie:
+```bash
+pip install curl-cffi beautifulsoup4 --break-system-packages
+```
+*(L'opzione `--break-system-packages` è spesso necessaria su distribuzioni moderne per permettere l'installazione di pacchetti globali con pip)*
