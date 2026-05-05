@@ -278,15 +278,24 @@ def fetch_product_html(url: str, cookie_header: str = "", retries: int = 2) -> s
     raise RuntimeError("Errore sconosciuto fetch_product_html")
 
 
-def extract_aisle_from_html(html: str) -> str:
+def extract_pdp_info(html: str) -> tuple[str, str]:
     # 1. Filtro Antigravity: Controllo indisponibilità totale
     html_lower = html.lower()
     if "non è disponibile in questo negozio" in html_lower or "ci dispiace" in html_lower:
-        return "ESAURITO"
+        return "ESAURITO", "0"
+
+    aisle = "Ubicazione non dichiarata nel DOM"
+    stock = ""
 
     if BeautifulSoup:
         soup = BeautifulSoup(html, 'html.parser')
         
+        # Estrai stock reale dal testo HTML
+        text_all = soup.get_text(separator=" ", strip=True)
+        match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', text_all, re.IGNORECASE)
+        if match_stock:
+            stock = match_stock.group(1)
+            
         # 2. Caccia all'ubicazione
         lane_div = soup.find('div', class_='product-heading-lane')
         if lane_div:
@@ -298,24 +307,27 @@ def extract_aisle_from_html(html: str) -> str:
                 # Caso 1: Corsia X
                 match_corsia = re.search(r'(Corsia\s+[A-Za-z0-9]+)', clean_text, re.IGNORECASE)
                 if match_corsia:
-                    return match_corsia.group(1).title()
-                
-                # Caso 2: Reparto X + Perimetro SX/DX
-                match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+[SD]X)', clean_text, re.IGNORECASE)
-                if match_perimetro:
-                    return match_perimetro.group(1).title()
-                    
-                # Caso 3: Reparto X (da solo)
-                # Escludiamo i trattini e prendiamo solo il nome del reparto
-                match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', clean_text, re.IGNORECASE)
-                if match_reparto:
-                    return match_reparto.group(1).title().strip()
+                    aisle = match_corsia.group(1).title()
+                else:
+                    # Caso 2: Reparto X + Perimetro SX/DX/destro/sinistro
+                    match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro))', clean_text, re.IGNORECASE)
+                    if match_perimetro:
+                        aisle = match_perimetro.group(1).title()
+                    else:
+                        # Caso 3: Reparto X (da solo)
+                        match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', clean_text, re.IGNORECASE)
+                        if match_reparto:
+                            aisle = match_reparto.group(1).title().strip()
+                        else:
+                            aisle = clean_text
 
-                return clean_text
-
-        return "Ubicazione non dichiarata nel DOM"
+        return aisle, stock
 
     # Fallback regex se BeautifulSoup non è installato
+    match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', html, re.IGNORECASE)
+    if match_stock:
+        stock = match_stock.group(1)
+
     lane_block = re.search(
         r'<div[^>]*class="[^"]*product-heading-lane[^"]*"[^>]*>(.*?)</div>\s*</div>',
         html,
@@ -325,17 +337,19 @@ def extract_aisle_from_html(html: str) -> str:
 
     match_corsia = re.search(r"(Corsia\s+[A-Za-z0-9]+)", scope, flags=re.IGNORECASE)
     if match_corsia:
-        return match_corsia.group(1).title()
-        
-    match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+[SD]X)', scope, flags=re.IGNORECASE)
-    if match_perimetro:
-        return match_perimetro.group(1).title()
-        
-    match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', scope, flags=re.IGNORECASE)
-    if match_reparto:
-        return match_reparto.group(1).title().strip()
+        aisle = match_corsia.group(1).title()
+    else:
+        match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro))', scope, flags=re.IGNORECASE)
+        if match_perimetro:
+            aisle = match_perimetro.group(1).title()
+        else:
+            match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', scope, flags=re.IGNORECASE)
+            if match_reparto:
+                aisle = match_reparto.group(1).title().strip()
+            else:
+                aisle = "Ubicazione non trovata"
 
-    return "Ubicazione non trovata"
+    return aisle, stock
 
 
 def resolve_aisle_with_html_fallback(document: Dict[str, Any], store_slug: str, cookie_header: str = "") -> str:
@@ -349,7 +363,7 @@ def resolve_aisle_with_html_fallback(document: Dict[str, Any], store_slug: str, 
 
     try:
         html = fetch_product_html(url, cookie_header=cookie_header)
-        parsed = extract_aisle_from_html(html)
+        parsed, _ = extract_pdp_info(html)
         if parsed:
             return parsed
     except Exception:
@@ -358,29 +372,29 @@ def resolve_aisle_with_html_fallback(document: Dict[str, Any], store_slug: str, 
     return aisle
 
 
-def resolve_aisle_from_pdp(document: Dict[str, Any], cookie_header: str = "") -> str:
+def resolve_pdp_data(document: Dict[str, Any], cookie_header: str = "") -> tuple[str, str]:
     url = str(pick_first(document, ["url", "product_url", "link"], default="")).strip()
     if not url:
-        return "URL prodotto non disponibile"
+        return "URL prodotto non disponibile", ""
     try:
         html = fetch_product_html(url, cookie_header=cookie_header)
     except Exception as e:
-        return f"Non disponibile (errore fetch PDP: {e})"
+        return f"Non disponibile (errore fetch PDP: {e})", ""
 
-    return extract_aisle_from_html(html)
+    return extract_pdp_info(html)
 
 
 def format_product(document: Dict[str, Any], store_slug: str, aisle: str) -> str:
     name = pick_first(document, ["name", "nome"])
     price = extract_price(document)
-    qty = extract_quantity(document)
+    qty = document.get("stock_pdp") or extract_quantity(document)
 
     url = pick_first(document, ["url", "product_url", "link"], default="")
 
     lines = [
         f"- Nome: {name}",
         f"  Prezzo: {price}",
-        f"  Quantita disponibile: {qty}",
+        f"  Quantita in negozio: {qty}",
         f"  Corsia ({store_slug.title()}): {aisle}",
     ]
     if url:
@@ -461,11 +475,16 @@ def main() -> None:
                 continue
                 
             # Fonte primaria: PDP SSR (piu stabile del solo indice Typesense per la corsia)
-            aisle = resolve_aisle_from_pdp(doc, cookie_header=effective_cookie)
+            aisle, stock_pdp = resolve_pdp_data(doc, cookie_header=effective_cookie)
             
             # Filtro invisibile: nascondi i prodotti esauriti dallo stdout di Termux
             if aisle == "ESAURITO":
                 continue
+                
+            if stock_pdp:
+                if not args.show_zero_stock and stock_pdp == "0":
+                    continue
+                doc["stock_pdp"] = stock_pdp
                 
             if valid_products_found == 0 and args.debug_fields:
                 first_hit_doc = doc
