@@ -297,29 +297,46 @@ def extract_pdp_info(html: str) -> tuple[str, str]:
             stock = match_stock.group(1)
             
         # 2. Caccia all'ubicazione
-        lane_div = soup.find('div', class_='product-heading-lane')
-        if lane_div:
-            value_div = lane_div.find('div', class_='product-heading__elem-label__value')
-            if value_div:
-                raw_text = value_div.get_text(separator=" ", strip=True)
-                clean_text = re.sub(r'\s+', ' ', raw_text).strip()
+        clean_text = ""
+        
+        # Metodo A: via tag specifici 'value'
+        val_divs = soup.find_all('div', class_=re.compile(r'elem-label__value'))
+        for val_div in val_divs:
+            t = val_div.get_text(separator=" ", strip=True)
+            if re.search(r'(Corsia|Reparto|Utensileria|Edilizia|Falegnameria|Piastrelle|Sanitari)', t, re.IGNORECASE):
+                clean_text = t
+                break
                 
-                # Caso 1: Corsia X
-                match_corsia = re.search(r'(Corsia\s+[A-Za-z0-9]+)', clean_text, re.IGNORECASE)
-                if match_corsia:
-                    aisle = match_corsia.group(1).title()
+        # Metodo B: brute force testuale
+        if not clean_text:
+            match_bf = re.search(r'(Corsia\s+[A-Za-z0-9]+|Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro)|Reparto\s+[A-Za-z0-9\s]+|UTENSILERIA|EDILIZIA|FALEGNAMERIA|PIASTRELLE|SANITARI)', text_all, re.IGNORECASE)
+            if match_bf:
+                clean_text = match_bf.group(1)
+
+        if clean_text:
+            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+            
+            # Caso 1: Corsia X
+            match_corsia = re.search(r'(Corsia\s+[A-Za-z0-9]+)', clean_text, re.IGNORECASE)
+            if match_corsia:
+                aisle = match_corsia.group(1).title()
+            else:
+                # Caso 2: Reparto X + Perimetro SX/DX/destro/sinistro
+                match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro))', clean_text, re.IGNORECASE)
+                if match_perimetro:
+                    aisle = match_perimetro.group(1).title()
                 else:
-                    # Caso 2: Reparto X + Perimetro SX/DX/destro/sinistro
-                    match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro))', clean_text, re.IGNORECASE)
-                    if match_perimetro:
-                        aisle = match_perimetro.group(1).title()
+                    # Caso 3: Reparto X (da solo)
+                    match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', clean_text, re.IGNORECASE)
+                    if match_reparto:
+                        aisle = match_reparto.group(1).title().strip()
                     else:
-                        # Caso 3: Reparto X (da solo)
-                        match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', clean_text, re.IGNORECASE)
-                        if match_reparto:
-                            aisle = match_reparto.group(1).title().strip()
+                        # Caso 4: Chiavi isolate senza "Reparto"
+                        match_isolato = re.search(r'(utensileria|edilizia|falegnameria|piastrelle|sanitari)', clean_text, re.IGNORECASE)
+                        if match_isolato:
+                            aisle = f"Reparto {match_isolato.group(1).title()}"
                         else:
-                            aisle = clean_text
+                            aisle = clean_text.title()
 
         return aisle, stock
 
@@ -347,7 +364,11 @@ def extract_pdp_info(html: str) -> tuple[str, str]:
             if match_reparto:
                 aisle = match_reparto.group(1).title().strip()
             else:
-                aisle = "Ubicazione non trovata"
+                match_isolato = re.search(r'(utensileria|edilizia|falegnameria|piastrelle|sanitari)', scope, flags=re.IGNORECASE)
+                if match_isolato:
+                    aisle = f"Reparto {match_isolato.group(1).title()}"
+                else:
+                    aisle = "Ubicazione non trovata"
 
     return aisle, stock
 
