@@ -1,0 +1,5 @@
+.env
+__pycache__/
+.playwright-mcp/
+page.html
+*.pyc

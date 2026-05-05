@@ -1,0 +1,29 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+REPO_DIR="$HOME/tecnomat_search"
+
+if [ ! -d "$REPO_DIR" ]; then
+  echo "Cartella non trovata: $REPO_DIR"
+  exit 1
+fi
+
+cd "$REPO_DIR"
+
+if ! command -v python >/dev/null 2>&1; then
+  echo "Python non installato"
+  exit 1
+fi
+
+if ! command -v tecnomat >/dev/null 2>&1; then
+  echo "Comando tecnomat non trovato: esegui tecnomat-reinstall"
+  exit 1
+fi
+
+echo "Python: $(python --version 2>&1)"
+echo "CLI: $(tecnomat -h | head -n 1)"
+
+echo "Test query breve..."
+tecnomat -n 1 "silicone"
+
+echo "Healthcheck OK"

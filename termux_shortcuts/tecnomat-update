@@ -1,0 +1,23 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+REPO_DIR="$HOME/tecnomat_search"
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  echo "Repo non trovata in $REPO_DIR"
+  echo "Clona prima il progetto con git in ~/tecnomat_search"
+  exit 1
+fi
+
+cd "$REPO_DIR"
+
+echo "[1/3] Git pull..."
+git pull --ff-only
+
+echo "[2/3] Reinstall comando tecnomat..."
+bash install_termux.sh
+
+echo "[3/3] Check sintassi Python..."
+python -m py_compile tecnomat_termux.py
+
+echo "Update completato"

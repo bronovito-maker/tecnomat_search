@@ -1,0 +1,15 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+REPO_DIR="$HOME/tecnomat_search"
+
+if [ ! -d "$REPO_DIR" ]; then
+  echo "Cartella non trovata: $REPO_DIR"
+  exit 1
+fi
+
+cd "$REPO_DIR"
+bash install_termux.sh
+python -m py_compile tecnomat_termux.py
+
+echo "Reinstall completato"
