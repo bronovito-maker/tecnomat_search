@@ -12,6 +12,15 @@ from typing import Any, Dict, List
 DEFAULT_PER_PAGE = 10
 
 
+def print_quick_tips() -> None:
+    print("Suggerimenti rapidi:")
+    print('  tecnomat "silicone bagno"')
+    print('  tecnomat -n 20 "trapano"')
+    print('  tecnomat --show-zero-stock "trapano"')
+    print("  tecnomat -h")
+    print("")
+
+
 def load_dotenv(path: str) -> None:
     if not os.path.exists(path):
         return
@@ -210,6 +219,9 @@ def main() -> None:
     args = parser.parse_args()
 
     per_page = max(1, min(args.num_results, 50))
+    fetch_per_page = per_page
+    if not args.show_zero_stock:
+        fetch_per_page = min(50, max(per_page * 3, per_page))
     query = " ".join(args.query).strip()
 
     typesense_url = env("TYPESENSE_URL")
@@ -217,21 +229,25 @@ def main() -> None:
     typesense_collection = env("TYPESENSE_COLLECTION")
     store_slug = env("TECNOMAT_STORE_SLUG", required=False, default="rimini")
 
-    url = build_url(typesense_url, typesense_collection, query, per_page)
+    url = build_url(typesense_url, typesense_collection, query, fetch_per_page)
     payload = fetch_typesense(url, typesense_key)
 
     hits = payload.get("hits", [])
     if not args.show_zero_stock:
         hits = [h for h in hits if parse_quantity_value(h.get("document", {})) != 0]
+    hits = hits[:per_page]
 
     if not hits:
         print("Nessun prodotto trovato con disponibilita > 0.")
+        print("")
+        print_quick_tips()
         return
 
     print(f"Risultati per: {query}\n")
     for idx, hit in enumerate(hits, start=1):
         doc = hit.get("document", {})
         print(f"{idx}. {format_product(doc, store_slug)}\n")
+    print_quick_tips()
 
 
 if __name__ == "__main__":
