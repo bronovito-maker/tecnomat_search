@@ -132,6 +132,23 @@ def extract_quantity(document: Dict[str, Any]) -> str:
     )
 
 
+def parse_quantity_value(document: Dict[str, Any]) -> int:
+    seller = document.get("seller_offer_116")
+    if isinstance(seller, dict) and seller.get("qty") not in (None, ""):
+        try:
+            return int(float(str(seller["qty"])))
+        except Exception:
+            return -1
+    for key in ["stock_store", "stock", "qty", "quantita_disponibile"]:
+        value = document.get(key)
+        if value not in (None, ""):
+            try:
+                return int(float(str(value)))
+            except Exception:
+                continue
+    return -1
+
+
 def extract_aisle(document: Dict[str, Any], store_slug: str) -> str:
     # Campo corsia non presente nei sample attuali dell'indice.
     aisle = pick_first(
@@ -185,6 +202,11 @@ def main() -> None:
         default=DEFAULT_PER_PAGE,
         help=f"Numero massimo risultati (default: {DEFAULT_PER_PAGE})",
     )
+    parser.add_argument(
+        "--show-zero-stock",
+        action="store_true",
+        help="Mostra anche prodotti con quantita disponibile uguale a 0",
+    )
     args = parser.parse_args()
 
     per_page = max(1, min(args.num_results, 50))
@@ -199,8 +221,11 @@ def main() -> None:
     payload = fetch_typesense(url, typesense_key)
 
     hits = payload.get("hits", [])
+    if not args.show_zero_stock:
+        hits = [h for h in hits if parse_quantity_value(h.get("document", {})) != 0]
+
     if not hits:
-        print("Nessun prodotto trovato.")
+        print("Nessun prodotto trovato con disponibilita > 0.")
         return
 
     print(f"Risultati per: {query}\n")
