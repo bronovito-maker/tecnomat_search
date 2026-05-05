@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 DEFAULT_PER_PAGE = 10
 
 
-def load_dotenv(path: str = ".env") -> None:
+def load_dotenv(path: str) -> None:
     if not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as f:
@@ -171,7 +171,11 @@ def format_product(document: Dict[str, Any], store_slug: str) -> str:
 
 
 def main() -> None:
-    load_dotenv()
+    # Priority:
+    # 1) repo-local .env
+    # 2) persistent user config ~/.config/tecnomat/.env
+    load_dotenv(".env")
+    load_dotenv(os.path.expanduser("~/.config/tecnomat/.env"))
     parser = argparse.ArgumentParser(description="Ricerca prodotti Tecnomat via Typesense")
     parser.add_argument("query", nargs="+", help='Testo da cercare, es: "trapano avvitatore"')
     parser.add_argument(

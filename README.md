@@ -21,6 +21,9 @@ cp .env.example .env
 ```
 
 Poi modifica `.env` con i tuoi valori reali.
+Dopo `bash install_termux.sh`, la config viene salvata anche in:
+- `~/.config/tecnomat/.env`
+cosi non la perdi dopo `git pull` o reinstall.
 
 ## 3) Installa il comando `tecnomat` (one-shot)
 
