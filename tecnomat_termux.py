@@ -282,7 +282,7 @@ def extract_aisle_from_html(html: str) -> str:
     # 1. Filtro Antigravity: Controllo indisponibilità totale
     html_lower = html.lower()
     if "non è disponibile in questo negozio" in html_lower or "ci dispiace" in html_lower:
-        return "Esaurito (Non disponibile a Rimini)"
+        return "ESAURITO"
 
     if BeautifulSoup:
         soup = BeautifulSoup(html, 'html.parser')
@@ -293,15 +293,25 @@ def extract_aisle_from_html(html: str) -> str:
             value_div = lane_div.find('div', class_='product-heading__elem-label__value')
             if value_div:
                 raw_text = value_div.get_text(separator=" ", strip=True)
+                clean_text = re.sub(r'\s+', ' ', raw_text).strip()
                 
-                # Cerca prima la Corsia specifica
-                match_corsia = re.search(r'Corsia\s+(\d+)', raw_text, re.IGNORECASE)
+                # Caso 1: Corsia X
+                match_corsia = re.search(r'(Corsia\s+[A-Za-z0-9]+)', clean_text, re.IGNORECASE)
                 if match_corsia:
-                    return match_corsia.group(1)
+                    return match_corsia.group(1).title()
                 
-                # Se non c'è corsia, pulisci il testo e restituisci il Reparto/Perimetro
-                clean_test = re.sub(r'\s+', ' ', raw_text).strip()
-                return f"Solo Reparto: {clean_test}"
+                # Caso 2: Reparto X + Perimetro SX/DX
+                match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+[SD]X)', clean_text, re.IGNORECASE)
+                if match_perimetro:
+                    return match_perimetro.group(1).title()
+                    
+                # Caso 3: Reparto X (da solo)
+                # Escludiamo i trattini e prendiamo solo il nome del reparto
+                match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', clean_text, re.IGNORECASE)
+                if match_reparto:
+                    return match_reparto.group(1).title().strip()
+
+                return clean_text
 
         return "Ubicazione non dichiarata nel DOM"
 
@@ -313,18 +323,17 @@ def extract_aisle_from_html(html: str) -> str:
     )
     scope = lane_block.group(1) if lane_block else html
 
-    match = re.search(r"Corsia\s*([A-Za-z0-9\-_/]+)", scope, flags=re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    
-    match_reparto = re.search(
-        r'In negozio:\s*</div>\s*<div[^>]*class="[^"]*product-heading__elem-label__value[^"]*"[^>]*>\s*([^<]+)\s*</div>',
-        html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+    match_corsia = re.search(r"(Corsia\s+[A-Za-z0-9]+)", scope, flags=re.IGNORECASE)
+    if match_corsia:
+        return match_corsia.group(1).title()
+        
+    match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+[SD]X)', scope, flags=re.IGNORECASE)
+    if match_perimetro:
+        return match_perimetro.group(1).title()
+        
+    match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', scope, flags=re.IGNORECASE)
     if match_reparto:
-        clean_text = re.sub(r"\s+", " ", match_reparto.group(1)).strip()
-        return f"Solo Reparto: {clean_text}"
+        return match_reparto.group(1).title().strip()
 
     return "Ubicazione non trovata"
 
@@ -426,7 +435,10 @@ def main() -> None:
     store_id = env("TECNOMAT_STORE_ID", required=False, default="")
     effective_cookie = build_store_cookie(store_cookie, store_id)
 
-    hits = []
+    valid_products_found = 0
+    first_hit_doc = None
+    print(f"Risultati per: {query}\n")
+
     max_pages = 10
     for page in range(1, max_pages + 1):
         url = build_url(
@@ -442,30 +454,40 @@ def main() -> None:
         page_hits = payload.get("hits", [])
         if not page_hits:
             break
-        if not args.show_zero_stock:
-            page_hits = [h for h in page_hits if parse_quantity_value(h.get("document", {})) != 0]
-        hits.extend(page_hits)
-        if len(hits) >= per_page:
+            
+        for hit in page_hits:
+            doc = hit.get("document", {})
+            if not args.show_zero_stock and parse_quantity_value(doc) == 0:
+                continue
+                
+            # Fonte primaria: PDP SSR (piu stabile del solo indice Typesense per la corsia)
+            aisle = resolve_aisle_from_pdp(doc, cookie_header=effective_cookie)
+            
+            # Filtro invisibile: nascondi i prodotti esauriti dallo stdout di Termux
+            if aisle == "ESAURITO":
+                continue
+                
+            if valid_products_found == 0 and args.debug_fields:
+                first_hit_doc = doc
+                
+            valid_products_found += 1
+            print(f"{valid_products_found}. {format_product(doc, store_slug, aisle)}\n")
+            
+            if valid_products_found >= per_page:
+                break
+                
+        if valid_products_found >= per_page:
             break
-    hits = hits[:per_page]
 
-    if not hits:
-        print("Nessun prodotto trovato con disponibilita > 0.")
+    if valid_products_found == 0:
+        print("Nessun prodotto disponibile in negozio trovato.")
         print("")
         print_quick_tips()
         return
 
-    print(f"Risultati per: {query}\n")
-    for idx, hit in enumerate(hits, start=1):
-        doc = hit.get("document", {})
-        # Fonte primaria: PDP SSR (piu stabile del solo indice Typesense per la corsia)
-        aisle = resolve_aisle_from_pdp(doc, cookie_header=effective_cookie)
-        print(f"{idx}. {format_product(doc, store_slug, aisle)}\n")
-
-    if args.debug_fields:
-        first_doc = hits[0].get("document", {})
+    if args.debug_fields and first_hit_doc:
         print("--- DEBUG FIRST HIT (RAW DOCUMENT) ---")
-        print(json.dumps(first_doc, ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps(first_hit_doc, ensure_ascii=False, indent=2, sort_keys=True))
         print("--- END DEBUG ---")
 
     print_quick_tips()
