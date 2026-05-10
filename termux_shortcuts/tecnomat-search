@@ -1,0 +1,19 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+REPO_DIR="$HOME/tecnomat_search"
+
+if [ ! -d "$REPO_DIR" ]; then
+  echo "Cartella non trovata: $REPO_DIR"
+  exit 1
+fi
+
+cd "$REPO_DIR"
+
+if ! command -v tecnomat >/dev/null 2>&1; then
+  echo "Comando tecnomat non trovato: esegui tecnomat-reinstall"
+  exit 1
+fi
+
+# Esegui tecnomat senza argomenti per attivare il prompt interattivo termux-dialog
+tecnomat

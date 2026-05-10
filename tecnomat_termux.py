@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+import subprocess
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
@@ -431,7 +432,7 @@ def main() -> None:
     load_dotenv(".env")
     load_dotenv(os.path.expanduser("~/.config/tecnomat/.env"))
     parser = argparse.ArgumentParser(description="Ricerca prodotti Tecnomat via Typesense")
-    parser.add_argument("query", nargs="+", help='Testo da cercare, es: "trapano avvitatore"')
+    parser.add_argument("query", nargs="*", help='Testo da cercare, es: "trapano avvitatore"')
     parser.add_argument(
         "-n",
         "--num-results",
@@ -459,6 +460,28 @@ def main() -> None:
     per_page = max(1, min(args.num_results, 50))
     fetch_per_page = min(50, max(per_page, 20))
     query = " ".join(args.query).strip()
+
+    if not query:
+        if "PREFIX" in os.environ and "com.termux" in os.environ.get("PREFIX", ""):
+            try:
+                res = subprocess.run(
+                    ["termux-dialog", "text", "-t", "Cerca in Tecnomat", "-i", "Es: trapano"],
+                    capture_output=True, text=True, check=True
+                )
+                dialog_out = json.loads(res.stdout)
+                query = dialog_out.get("text", "").strip()
+            except Exception:
+                pass
+        
+        if not query:
+            try:
+                query = input("Inserisci il prodotto da cercare: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                sys.exit(0)
+                
+        if not query:
+            print("Nessun termine di ricerca fornito. Uscita.")
+            sys.exit(1)
 
     typesense_url = env("TYPESENSE_URL")
     typesense_key = env("TYPESENSE_API_KEY")
