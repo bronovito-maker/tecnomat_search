@@ -7,10 +7,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultsGrid = document.getElementById('resultsGrid');
     const loader = document.getElementById('loader');
     const emptyState = document.getElementById('emptyState');
+    const aiSection = document.getElementById('aiSection');
 
-    // Metti qui l'URL del tuo server Railway una volta fatto il deploy!
-    // Es: const API_BASE_URL = 'https://tecnomat-api.up.railway.app';
-    const API_BASE_URL = 'tecnomatsearch-production.up.railway.app';
+    // URL di produzione su Railway
+    const API_BASE_URL = 'https://tecnomatsearch-production.up.railway.app';
 
     searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -23,6 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // UI Updates
         emptyState.classList.add('hidden');
+        aiSection.classList.add('hidden');
+        aiSection.innerHTML = '';
         resultsGrid.innerHTML = '';
         loader.classList.remove('hidden');
 
@@ -44,6 +46,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             loader.classList.add('hidden');
+
+            // Mostra consigli AI se presenti
+            if (data.ai_insights) {
+                renderAIInsights(data.ai_insights);
+            }
 
             if (data.results && data.results.length > 0) {
                 renderResults(data.results);
@@ -93,6 +100,32 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Inizializza le nuove icone lucide appena inserite
+        lucide.createIcons();
+    }
+
+    function renderAIInsights(insights) {
+        aiSection.innerHTML = `
+            <div class="ai-header">
+                <i data-lucide="sparkles"></i>
+                Consigli di Nikituttofare
+            </div>
+            <div class="ai-advice">${insights.advice}</div>
+            <div class="ai-kit-container" id="kitContainer"></div>
+        `;
+
+        const kitContainer = document.getElementById('kitContainer');
+        insights.kit.forEach(item => {
+            const tag = document.createElement('div');
+            tag.className = 'kit-tag';
+            tag.innerHTML = `<i data-lucide="plus-circle"></i> ${item}`;
+            tag.onclick = () => {
+                searchInput.value = item;
+                searchForm.dispatchEvent(new Event('submit'));
+            };
+            kitContainer.appendChild(tag);
+        });
+
+        aiSection.classList.remove('hidden');
         lucide.createIcons();
     }
 
