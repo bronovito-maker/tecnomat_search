@@ -183,7 +183,13 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
         
         # Auto-discovery della collection (Fast-Probe ENI)
         collection = discover_tecnomat_collection(url_base, api_key)
-        params = {"q": query, "query_by": query_by, "per_page": str(num_results * 3)} # Più risultati per filtrare stock 0
+        params = {
+            "q": query, 
+            "query_by": query_by, 
+            "per_page": "60",
+            "num_typos": "2",
+            "min_len_1typo": "4"
+        } 
 
         def run_typesense_search(collection_name: str) -> Dict[str, Any]:
             ts_url = f"{url_base.rstrip('/')}/collections/{collection_name}/documents/search"
