@@ -9,6 +9,7 @@ import uvicorn
 import uvicorn
 import google.generativeai as genai
 import json
+import time
 
 # Carichiamo le variabili d'ambiente
 load_dotenv(".env")
@@ -87,9 +88,12 @@ def api_search(
     show_zero: bool = Query(False, description="Mostra anche prodotti esauriti"),
     sort_price: bool = Query(False, description="Ordina tutti i risultati per prezzo")
 ):
-    
+    t0 = time.time()
+    print(f"[DIAG][API] start q='{q}' negozio={negozio} n={n} show_zero={show_zero} sort_price={sort_price}")
+
     query = q.strip()
     if not query:
+        print("[DIAG][API] empty_query")
         return {"results": [], "error": "Query vuota"}
 
     # Analisi IA (opzionale e parallela se possibile, ma facciamola semplice per ora)
@@ -107,10 +111,13 @@ def api_search(
         
         for future in as_completed(futures):
             try:
-                all_results.extend(future.result())
+                batch = future.result()
+                source = batch[0]["source"] if batch else "EMPTY"
+                print(f"[DIAG][API] provider_done source={source} count={len(batch)}")
+                all_results.extend(batch)
             except Exception as e:
                 # Se una fonte fallisce, continuiamo con l'altra
-                print(f"Errore durante l'esecuzione del future: {e}")
+                print(f"[DIAG][API] provider_error type={type(e).__name__} detail={e}")
                 pass
 
     if sort_price and all_results:
@@ -118,6 +125,9 @@ def api_search(
     else:
         # Default: Ordiniamo in base al negozio (Tecnomat prima)
         all_results.sort(key=lambda x: 0 if x["source"] == "TECNOMAT" else 1)
+
+    elapsed_ms = int((time.time() - t0) * 1000)
+    print(f"[DIAG][API] done count={len(all_results)} elapsed_ms={elapsed_ms}")
 
     return {
         "query": query,

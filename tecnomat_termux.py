@@ -8,7 +8,9 @@ import time
 import subprocess
 import urllib.parse
 import urllib.request
+import urllib.error
 import random
+import threading
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +26,13 @@ except ImportError:
     BeautifulSoup = None
 
 DEFAULT_PER_PAGE = 5
+DEBUG_DIAG = os.getenv("SEARCH_DIAG", "1").strip().lower() not in ("0", "false", "no")
+
+def diag(provider: str, message: str) -> None:
+    if not DEBUG_DIAG:
+        return
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    print(f"[DIAG][{provider}][{ts}] {message}")
 
 def print_quick_tips() -> None:
     print("\nSuggerimenti rapidi:")
@@ -123,68 +132,90 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
 # Cache globale per la collezione Tecnomat
 _TECNOMAT_COLLECTION_CACHE = None
 
-def discover_tecnomat_collection() -> str:
-    """Versione rapida e ottimizzata per trovare la collection Tecnomat."""
+def _extract_tecnomat_collection_id(name: str) -> int:
+    match = re.fullmatch(r"tm_prod_products_1_(\d+)", (name or "").strip())
+    return int(match.group(1)) if match else -1
+
+def _discover_tecnomat_collection_from_typesense(url_base: str, api_key: str) -> str:
+    url = f"{url_base.rstrip('/')}/collections"
+    req = urllib.request.Request(
+        url,
+        headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    names = [c.get("name", "") for c in payload if isinstance(c, dict)]
+    candidates = [name for name in names if _extract_tecnomat_collection_id(name) >= 0]
+    if not candidates:
+        raise RuntimeError("Nessuna collection Tecnomat trovata in Typesense")
+    return max(candidates, key=_extract_tecnomat_collection_id)
+
+def discover_tecnomat_collection(url_base: str, api_key: str) -> str:
+    """Scopre la collection Tecnomat più recente (cache + API + fallback)."""
     global _TECNOMAT_COLLECTION_CACHE
     if _TECNOMAT_COLLECTION_CACHE:
         return _TECNOMAT_COLLECTION_CACHE
-        
-    # Default stabile verificato oggi
-    current_fallback = "tm_prod_products_1_129"
-    
+
+    env_collection = env("TYPESENSE_COLLECTION", required=False, default="")
+    if _extract_tecnomat_collection_id(env_collection) >= 0:
+        _TECNOMAT_COLLECTION_CACHE = env_collection
+        return env_collection
+
     try:
-        # Tentativo rapido di scansione (solo se necessario)
-        html = fetch_html_ghost("https://www.tecnomat.it/", timeout=3)
-        matches = re.findall(r'tm_prod_products_1_(\d+)', html)
-        valid = [int(v) for v in matches if int(v) > 116]
-        if valid:
-            col = f"tm_prod_products_1_{max(valid)}"
-            _TECNOMAT_COLLECTION_CACHE = col
-            return col
-    except:
+        col = _discover_tecnomat_collection_from_typesense(url_base, api_key)
+        _TECNOMAT_COLLECTION_CACHE = col
+        return col
+    except Exception:
         pass
-        
-    return current_fallback
+
+    _TECNOMAT_COLLECTION_CACHE = "tm_prod_products_1_129"
+    return _TECNOMAT_COLLECTION_CACHE
 
 # --- TECNOMAT PROVIDER ---
 def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[str, str]]:
     global _TECNOMAT_COLLECTION_CACHE
     try:
+        diag("TECNOMAT", f"start query='{query}' n={num_results} show_zero={show_zero}")
         url_base = env("TYPESENSE_URL")
         api_key = env("TYPESENSE_API_KEY")
         store_id = env("TECNOMAT_STORE_ID", required=False, default="39")
         query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
         
-        # Auto-discovery della collection
-        collection = discover_tecnomat_collection()
-        
-        ts_url = f"{url_base.rstrip('/')}/collections/{collection}/documents/search"
+        # Auto-discovery collection + retry intelligente su 404
+        collection = discover_tecnomat_collection(url_base, api_key)
         params = {"q": query, "query_by": query_by, "per_page": str(num_results * 3)} # Più risultati per filtrare stock 0
-        full_url = f"{ts_url}?{urllib.parse.urlencode(params)}"
-        
-        req = urllib.request.Request(full_url, headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"})
-        
-        try:
+
+        def run_typesense_search(collection_name: str) -> Dict[str, Any]:
+            ts_url = f"{url_base.rstrip('/')}/collections/{collection_name}/documents/search"
+            full_url = f"{ts_url}?{urllib.parse.urlencode(params)}"
+            diag("TECNOMAT", f"typesense_search collection={collection_name} url={full_url}")
+            req = urllib.request.Request(
+                full_url,
+                headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            data = run_typesense_search(collection)
         except urllib.error.HTTPError as e:
-            if e.code == 404:
-                # Se 404, probabilmente la collezione è scaduta. Svuotiamo la cache e riproviamo una volta.
-                print("🔄 Collection scaduta, riprovo auto-detection...")
-                _TECNOMAT_COLLECTION_CACHE = None
-                collection = discover_tecnomat_collection()
-                ts_url = f"{url_base.rstrip('/')}/collections/{collection}/documents/search"
-                full_url = f"{ts_url}?{urllib.parse.urlencode(params)}"
-                req = urllib.request.Request(full_url, headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"})
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-            else:
+            if e.code != 404:
                 raise
+            diag("TECNOMAT", "collection_404 resync_from_typesense_api")
+            _TECNOMAT_COLLECTION_CACHE = None
+            collection = _discover_tecnomat_collection_from_typesense(url_base, api_key)
+            _TECNOMAT_COLLECTION_CACHE = collection
+            data = run_typesense_search(collection)
 
         results = []
+        dropped_zero_stock = 0
+        pdp_failures = 0
+        unavailable_store = 0
+        counters_lock = threading.Lock()
         cookie_header = f"bricoman_retailer_shop_id={store_id}; bricoman_previous_shop_id={store_id}"
         
         def process_hit(hit):
+            nonlocal dropped_zero_stock, pdp_failures, unavailable_store
             doc = hit.get("document", {})
             pdp_url = doc.get("product_url") or doc.get("url", "")
             
@@ -203,6 +234,8 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
                     html_lower = html.lower()
                     
                     if "non è disponibile in questo negozio" in html_lower:
+                        with counters_lock:
+                            unavailable_store += 1
                         return None
                         
                     if BeautifulSoup:
@@ -220,9 +253,13 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
                             aisle = raw_aisle.title()
                 except Exception:
                     # Fallback sui dati Typesense se il PDP fallisce
+                    with counters_lock:
+                        pdp_failures += 1
                     stock = str(doc.get("stock_store", "0"))
                     
             if not show_zero and stock == "0":
+                with counters_lock:
+                    dropped_zero_stock += 1
                 return None
                 
             return {
@@ -243,26 +280,98 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
                     results.append(res)
                 if len(results) >= num_results:
                     break
+        diag(
+            "TECNOMAT",
+            (
+                f"done hits={len(data.get('hits', []))} returned={len(results)} "
+                f"dropped_zero={dropped_zero_stock} pdp_failures={pdp_failures} "
+                f"not_in_store={unavailable_store} collection={collection}"
+            ),
+        )
                     
         return results
     except Exception as e:
-        print(f"Debug Tecnomat Error: {e}")
+        diag("TECNOMAT", f"error type={type(e).__name__} detail={e}")
         return []
 
 # --- LEROY MERLIN PROVIDER ---
 def search_leroy_merlin(query: str, num_results: int, show_zero: bool) -> List[Dict[str, Any]]:
     try:
+        diag("LEROY", f"start query='{query}' n={num_results} show_zero={show_zero}")
         base_url = env("LEROY_MERLIN_BASE_URL", required=False, default="https://www.leroymerlin.it")
         store_id = env("LEROY_MERLIN_STORE_ID", required=False, default="11")
         
         search_url = f"{base_url}/search?q={urllib.parse.quote(query)}"
         cookie_header = f"lmit_store_id={store_id}"
+        diag("LEROY", f"search_url={search_url} store_id={store_id}")
         
         html = fetch_html_ghost(search_url, cookie_header=cookie_header)
             
         results = []
+        seen_urls = set()
+        dropped_zero_stock = 0
+        jsonld_candidates = 0
+        html_candidates = 0
+
+        def append_result(name: str, price: str, stock: str, url: str) -> None:
+            nonlocal dropped_zero_stock
+            if not name or len(name.strip()) < 5:
+                return
+            final_url = urllib.parse.urljoin(base_url, url or "")
+            if not final_url or final_url in seen_urls:
+                return
+            stock_l = (stock or "").lower()
+            is_zero = any(x in stock_l for x in [
+                "non disponibile", "esaurito", "giorni",
+                "consegna", "domicilio", "spedito", "marketplace"
+            ])
+            if not show_zero and is_zero:
+                dropped_zero_stock += 1
+                return
+            seen_urls.add(final_url)
+            results.append({
+                "source": "LEROY MERLIN",
+                "name": name.strip(),
+                "price": price or "N/D",
+                "stock": stock or "Vedi sito",
+                "location": "Vedi sito web",
+                "url": final_url
+            })
+
         if BeautifulSoup:
             soup = BeautifulSoup(html, 'html.parser')
+            # Parsing JSON-LD (più robusto delle classi CSS variabili)
+            for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+                raw = (script.string or script.get_text() or "").strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    continue
+                nodes = payload if isinstance(payload, list) else [payload]
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    node_type = node.get("@type")
+                    if node_type == "Product":
+                        offers = node.get("offers", {}) if isinstance(node.get("offers", {}), dict) else {}
+                        p = offers.get("price")
+                        price = format_eur(p) if p not in (None, "") else "N/D"
+                        append_result(node.get("name", ""), price, offers.get("availability", "Vedi sito"), node.get("url", ""))
+                    elif node_type == "ItemList":
+                        for li in node.get("itemListElement", []):
+                            item = li.get("item", {}) if isinstance(li, dict) else {}
+                            if not isinstance(item, dict):
+                                continue
+                            offers = item.get("offers", {}) if isinstance(item.get("offers", {}), dict) else {}
+                            p = offers.get("price")
+                            price = format_eur(p) if p not in (None, "") else "N/D"
+                            jsonld_candidates += 1
+                            append_result(item.get("name", ""), price, offers.get("availability", "Vedi sito"), item.get("url", ""))
+                if len(results) >= num_results:
+                    break
+
             # Selettori verificati: Leroy Merlin usa molto 'article' per i prodotti
             items = soup.find_all('article', class_=re.compile(r'o-thumbnail|product-card|plp-product-card'))
             
@@ -277,6 +386,7 @@ def search_leroy_merlin(query: str, num_results: int, show_zero: bool) -> List[D
                 link_tag = item.find('a', href=True)
                 
                 if name_tag and link_tag:
+                    html_candidates += 1
                     name = name_tag.get_text(strip=True)
                     if len(name) < 5: continue
                     
@@ -309,20 +419,21 @@ def search_leroy_merlin(query: str, num_results: int, show_zero: bool) -> List[D
                     
                     if not show_zero and is_zero:
                         continue
-                        
-                    results.append({
-                        "source": "LEROY MERLIN",
-                        "name": name,
-                        "price": price,
-                        "stock": stock_text,
-                        "location": "Vedi sito web",
-                        "url": urllib.parse.urljoin(base_url, link_tag['href'])
-                    })
+
+                    append_result(name, price, stock_text, link_tag['href'])
                     
                 if len(results) >= num_results:
                     break
+        diag(
+            "LEROY",
+            (
+                f"done returned={len(results)} dropped_zero={dropped_zero_stock} "
+                f"jsonld_candidates={jsonld_candidates} html_candidates={html_candidates}"
+            ),
+        )
         return results
     except Exception as e:
+        diag("LEROY", f"error type={type(e).__name__} detail={e}")
         return []
 
 # --- MAIN ENGINE ---
