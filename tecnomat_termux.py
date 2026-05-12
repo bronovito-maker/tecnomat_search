@@ -120,14 +120,45 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
             raise
     raise last_exc or RuntimeError("Errore sconosciuto fetch_html_ghost")
 
+# Cache globale per la collezione Tecnomat
+_TECNOMAT_COLLECTION_CACHE = None
+
+def discover_tecnomat_collection() -> str:
+    """Tenta di scoprire l'attuale collection Typesense dalla home di Tecnomat."""
+    global _TECNOMAT_COLLECTION_CACHE
+    try:
+        # Se abbiamo già una cache, usiamola
+        if _TECNOMAT_COLLECTION_CACHE:
+            return _TECNOMAT_COLLECTION_CACHE
+            
+        print("🔍 Auto-detecting Tecnomat collection...")
+        html = fetch_html_ghost("https://www.tecnomat.it/")
+        
+        # Cerchiamo il pattern tm_prod_products_1_ seguito da numeri
+        match = re.search(r'tm_prod_products_1_\d+', html)
+        if match:
+            col = match.group(0)
+            _TECNOMAT_COLLECTION_CACHE = col
+            print(f"✅ Trovata collection: {col}")
+            return col
+            
+        # Fallback se non troviamo nulla
+        return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
+    except Exception as e:
+        print(f"⚠️ Errore auto-discovery: {e}")
+        return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
+
 # --- TECNOMAT PROVIDER ---
 def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[str, str]]:
+    global _TECNOMAT_COLLECTION_CACHE
     try:
         url_base = env("TYPESENSE_URL")
         api_key = env("TYPESENSE_API_KEY")
-        collection = env("TYPESENSE_COLLECTION")
         store_id = env("TECNOMAT_STORE_ID", required=False, default="39")
         query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
+        
+        # Auto-discovery della collection
+        collection = discover_tecnomat_collection()
         
         ts_url = f"{url_base.rstrip('/')}/collections/{collection}/documents/search"
         params = {"q": query, "query_by": query_by, "per_page": str(num_results * 3)} # Più risultati per filtrare stock 0
@@ -135,8 +166,22 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
         
         req = urllib.request.Request(full_url, headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"})
         
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                # Se 404, probabilmente la collezione è scaduta. Svuotiamo la cache e riproviamo una volta.
+                print("🔄 Collection scaduta, riprovo auto-detection...")
+                _TECNOMAT_COLLECTION_CACHE = None
+                collection = discover_tecnomat_collection()
+                ts_url = f"{url_base.rstrip('/')}/collections/{collection}/documents/search"
+                full_url = f"{ts_url}?{urllib.parse.urlencode(params)}"
+                req = urllib.request.Request(full_url, headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            else:
+                raise
 
         results = []
         cookie_header = f"bricoman_retailer_shop_id={store_id}; bricoman_previous_shop_id={store_id}"
