@@ -134,12 +134,14 @@ def discover_tecnomat_collection() -> str:
         print("🔍 Auto-detecting Tecnomat collection...")
         html = fetch_html_ghost("https://www.tecnomat.it/")
         
-        # Cerchiamo il pattern tm_prod_products_1_ seguito da numeri
-        match = re.search(r'tm_prod_products_1_\d+', html)
-        if match:
-            col = match.group(0)
+        # Cerchiamo tutte le occorrenze del pattern tm_prod_products_1_ seguito da numeri
+        matches = re.findall(r'tm_prod_products_1_(\d+)', html)
+        if matches:
+            # Prendiamo il numero più alto trovato (presumibilmente il più recente)
+            highest_version = max(int(v) for v in matches)
+            col = f"tm_prod_products_1_{highest_version}"
             _TECNOMAT_COLLECTION_CACHE = col
-            print(f"✅ Trovata collection: {col}")
+            print(f"✅ Trovata collection più recente: {col}")
             return col
             
         # Fallback se non troviamo nulla
