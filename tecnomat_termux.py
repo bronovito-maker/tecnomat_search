@@ -124,34 +124,49 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
 _TECNOMAT_COLLECTION_CACHE = None
 
 def discover_tecnomat_collection() -> str:
-    """Tenta di scoprire l'attuale collection Typesense dalla home di Tecnomat."""
+    """Radar avanzato per trovare la vera collection attiva di Tecnomat."""
     global _TECNOMAT_COLLECTION_CACHE
     try:
-        # Se abbiamo già una cache, usiamola
         if _TECNOMAT_COLLECTION_CACHE:
             return _TECNOMAT_COLLECTION_CACHE
             
-        print("🔍 Auto-detecting Tecnomat collection via homepage (improved radar)...")
+        print("🔍 Radar ENI: Scansione profonda collection Tecnomat...")
         html = fetch_html_ghost("https://www.tecnomat.it/")
         
-        # Cerchiamo pattern che includano 'collection' o 'tm_prod' in vari formati
-        # Questo cattura sia tm_prod_products_1_130 che altre possibili varianti
-        matches = re.findall(r'(tm_prod_products_\d+_\d+)', html)
-        if matches:
-            # Prendiamo il più recente (quello con il numero finale più alto)
-            # v.split('_')[-1] prende l'ultima parte dopo l'ultimo underscore
-            col = max(matches, key=lambda v: int(v.split('_')[-1]))
+        # Cerchiamo tutti i numeri di versione
+        versions = re.findall(r'tm_prod_products_1_(\d+)', html)
+        # Filtriamo le versioni palesemente vecchie (come la 116)
+        valid_versions = [int(v) for v in versions if int(v) > 116]
+        
+        if valid_versions:
+            highest = max(valid_versions)
+            col = f"tm_prod_products_1_{highest}"
             _TECNOMAT_COLLECTION_CACHE = col
-            print(f"✅ Radar ha intercettato la collection: {col}")
+            print(f"✅ Radar ha intercettato la vera collection nell'HTML: {col}")
             return col
             
-        print("⚠️ Nessun match trovato nell'HTML. Controllo fallback...")
-        return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_130")
-            
-        # Fallback se non troviamo nulla
+        # Se non troviamo nulla di nuovo nell'HTML, cerchiamo nei bundle JS esterni
+        print("📡 Cerco nei bundle Javascript esterni...")
+        script_urls = re.findall(r'src="(https://[^"]+/static/[^"]+\.js)"', html)
+        
+        for s_url in script_urls[:8]: # Scansione dei bundle principali
+            try:
+                js_content = fetch_html_ghost(s_url, timeout=5)
+                js_versions = re.findall(r'tm_prod_products_1_(\d+)', js_content)
+                js_valid = [int(v) for v in js_versions if int(v) > 116]
+                if js_valid:
+                    highest = max(js_valid)
+                    col = f"tm_prod_products_1_{highest}"
+                    _TECNOMAT_COLLECTION_CACHE = col
+                    print(f"✅ Trovata collection nel bundle JS: {col}")
+                    return col
+            except:
+                continue
+
+        # Fallback se tutto fallisce
         return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
     except Exception as e:
-        print(f"⚠️ Errore auto-discovery: {e}")
+        print(f"⚠️ Errore radar ENI: {e}")
         return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
 
 # --- TECNOMAT PROVIDER ---
