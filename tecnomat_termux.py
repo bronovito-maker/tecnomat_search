@@ -88,12 +88,12 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
     """Usa curl_cffi per ingannare DataDome e altri WAF simulando Chrome 120 su Android."""
     time.sleep(random.uniform(0.5, 1.5))
     base_headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "Sec-Ch-Ua-Mobile": "?1",
-        "Sec-Ch-Ua-Platform": '"Android"',
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "none",
@@ -109,7 +109,20 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
             
         try:
             if curl_requests:
-                response = curl_requests.get(url, headers=headers, impersonate="chrome120", timeout=timeout)
+                # Determiniamo il referer basandoci sull'URL
+                referer = "https://www.google.com/"
+                headers["Sec-Fetch-Site"] = "cross-site"
+                
+                if "tecnomat.it" in url: 
+                    referer = "https://www.tecnomat.it/"
+                    headers["Sec-Fetch-Site"] = "same-origin"
+                if "leroymerlin.it" in url: 
+                    referer = "https://www.leroymerlin.it/"
+                    headers["Sec-Fetch-Site"] = "same-origin"
+                
+                headers["Referer"] = referer
+                
+                response = curl_requests.get(url, headers=headers, impersonate="chrome124", timeout=timeout)
                 if response.status_code == 200:
                     return response.text
                 elif response.status_code == 410: # Spesso usato per contenuti rimossi o bot blocks
@@ -211,8 +224,8 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
             
             if pdp_url:
                 try:
-                    # Timeout breve e zero retries
-                    html = fetch_html_ghost(pdp_url, cookie_header=cookie_header, retries=0, timeout=5)
+                    # Timeout leggermente più lungo e 1 retry per stabilità
+                    html = fetch_html_ghost(pdp_url, cookie_header=cookie_header, retries=1, timeout=8)
                     html_lower = html.lower()
                     
                     if "non è disponibile in questo negozio" in html_lower:
