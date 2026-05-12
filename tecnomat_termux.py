@@ -132,44 +132,30 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
 # Cache globale per la collezione Tecnomat
 _TECNOMAT_COLLECTION_CACHE = None
 
-def _extract_tecnomat_collection_id(name: str) -> int:
-    match = re.fullmatch(r"tm_prod_products_1_(\d+)", (name or "").strip())
-    return int(match.group(1)) if match else -1
-
-def _discover_tecnomat_collection_from_typesense(url_base: str, api_key: str) -> str:
-    url = f"{url_base.rstrip('/')}/collections"
-    req = urllib.request.Request(
-        url,
-        headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=8) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    names = [c.get("name", "") for c in payload if isinstance(c, dict)]
-    candidates = [name for name in names if _extract_tecnomat_collection_id(name) >= 0]
-    if not candidates:
-        raise RuntimeError("Nessuna collection Tecnomat trovata in Typesense")
-    return max(candidates, key=_extract_tecnomat_collection_id)
-
-def discover_tecnomat_collection(url_base: str, api_key: str) -> str:
-    """Scopre la collection Tecnomat più recente (cache + API + fallback)."""
+def discover_tecnomat_collection() -> str:
+    """La Sonda: Estrazione chirurgica della collection attiva di Tecnomat."""
     global _TECNOMAT_COLLECTION_CACHE
     if _TECNOMAT_COLLECTION_CACHE:
         return _TECNOMAT_COLLECTION_CACHE
-
-    env_collection = env("TYPESENSE_COLLECTION", required=False, default="")
-    if _extract_tecnomat_collection_id(env_collection) >= 0:
-        _TECNOMAT_COLLECTION_CACHE = env_collection
-        return env_collection
-
+        
     try:
-        col = _discover_tecnomat_collection_from_typesense(url_base, api_key)
-        _TECNOMAT_COLLECTION_CACHE = col
-        return col
-    except Exception:
-        pass
-
-    _TECNOMAT_COLLECTION_CACHE = "tm_prod_products_1_129"
-    return _TECNOMAT_COLLECTION_CACHE
+        print("🔍 Sonda ENI: Intercettazione ID dinamico...")
+        # Puntiamo alla pagina di ricerca che contiene la configurazione live
+        html = fetch_html_ghost("https://www.tecnomat.it/it/search/?q=search", timeout=5)
+        
+        # La Regex 'Sonda' cerca il pattern esatto usato da Typesense
+        match = re.search(r'tm_prod_products_\d+_\d+', html)
+        if match:
+            col = match.group(0)
+            _TECNOMAT_COLLECTION_CACHE = col
+            print(f"✅ Sonda ha intercettato il target: {col}")
+            return col
+            
+    except Exception as e:
+        print(f"⚠️ Interferenza nella Sonda: {e}")
+        
+    # Fallback stabile verificato
+    return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
 
 # --- TECNOMAT PROVIDER ---
 def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[str, str]]:
@@ -181,8 +167,8 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
         store_id = env("TECNOMAT_STORE_ID", required=False, default="39")
         query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
         
-        # Auto-discovery collection + retry intelligente su 404
-        collection = discover_tecnomat_collection(url_base, api_key)
+        # Auto-discovery della collection (La Sonda)
+        collection = discover_tecnomat_collection()
         params = {"q": query, "query_by": query_by, "per_page": str(num_results * 3)} # Più risultati per filtrare stock 0
 
         def run_typesense_search(collection_name: str) -> Dict[str, Any]:
@@ -199,13 +185,9 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
         try:
             data = run_typesense_search(collection)
         except urllib.error.HTTPError as e:
-            if e.code != 404:
-                raise
-            diag("TECNOMAT", "collection_404 resync_from_typesense_api")
+            # Se riceviamo 404, svuotiamo la cache e solleviamo l'errore per il logger
             _TECNOMAT_COLLECTION_CACHE = None
-            collection = _discover_tecnomat_collection_from_typesense(url_base, api_key)
-            _TECNOMAT_COLLECTION_CACHE = collection
-            data = run_typesense_search(collection)
+            raise e
 
         results = []
         dropped_zero_stock = 0
