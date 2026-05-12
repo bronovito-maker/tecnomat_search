@@ -131,19 +131,22 @@ def discover_tecnomat_collection() -> str:
         if _TECNOMAT_COLLECTION_CACHE:
             return _TECNOMAT_COLLECTION_CACHE
             
-        print("🔍 Auto-detecting Tecnomat collection via search page...")
-        # Usiamo una pagina di ricerca per essere sicuri di beccare la versione attiva
-        html = fetch_html_ghost("https://www.tecnomat.it/it/search/?q=trapano")
+        print("🔍 Auto-detecting Tecnomat collection via homepage (improved radar)...")
+        html = fetch_html_ghost("https://www.tecnomat.it/")
         
-        # Cerchiamo tutte le occorrenze del pattern tm_prod_products_1_ seguito da numeri
-        matches = re.findall(r'tm_prod_products_1_(\d+)', html)
+        # Cerchiamo pattern che includano 'collection' o 'tm_prod' in vari formati
+        # Questo cattura sia tm_prod_products_1_130 che altre possibili varianti
+        matches = re.findall(r'(tm_prod_products_\d+_\d+)', html)
         if matches:
-            # Prendiamo il numero più alto trovato
-            highest_version = max(int(v) for v in matches)
-            col = f"tm_prod_products_1_{highest_version}"
+            # Prendiamo il più recente (quello con il numero finale più alto)
+            # v.split('_')[-1] prende l'ultima parte dopo l'ultimo underscore
+            col = max(matches, key=lambda v: int(v.split('_')[-1]))
             _TECNOMAT_COLLECTION_CACHE = col
-            print(f"✅ Trovata collection attiva: {col} ({len(matches)} matches)")
+            print(f"✅ Radar ha intercettato la collection: {col}")
             return col
+            
+        print("⚠️ Nessun match trovato nell'HTML. Controllo fallback...")
+        return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_130")
             
         # Fallback se non troviamo nulla
         return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
