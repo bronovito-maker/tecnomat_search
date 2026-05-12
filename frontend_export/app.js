@@ -3,18 +3,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('searchInput');
     const negozioSelect = document.getElementById('negozioSelect');
     const sortPriceToggle = document.getElementById('sortPrice');
-    
+
     const resultsGrid = document.getElementById('resultsGrid');
     const loader = document.getElementById('loader');
     const emptyState = document.getElementById('emptyState');
 
     // Metti qui l'URL del tuo server Railway una volta fatto il deploy!
     // Es: const API_BASE_URL = 'https://tecnomat-api.up.railway.app';
-    const API_BASE_URL = 'http://localhost:8000';
+    const API_BASE_URL = 'tecnomatsearch-production.up.railway.app';
 
     searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        
+
         const query = searchInput.value.trim();
         if (!query) return;
 
@@ -36,13 +36,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Chiamata all'API
             const response = await fetch(url);
-            
+
             if (!response.ok) {
                 throw new Error('Errore di rete o server offline');
             }
 
             const data = await response.json();
-            
+
             loader.classList.add('hidden');
 
             if (data.results && data.results.length > 0) {
@@ -60,16 +60,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderResults(results) {
         resultsGrid.innerHTML = '';
-        
+
         results.forEach(prod => {
             const isTecnomat = prod.source === 'TECNOMAT';
             const badgeClass = isTecnomat ? 'tecnomat' : 'leroy';
-            
+
             const card = document.createElement('a');
             card.href = prod.url;
             card.target = '_blank';
             card.className = 'product-card';
-            
+
             card.innerHTML = `
                 <div class="badge ${badgeClass}">${prod.source}</div>
                 <h3 class="product-name">${prod.name}</h3>
@@ -88,10 +88,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     ` : ''}
                 </div>
             `;
-            
+
             resultsGrid.appendChild(card);
         });
-        
+
         // Inizializza le nuove icone lucide appena inserite
         lucide.createIcons();
     }
