@@ -131,17 +131,18 @@ def discover_tecnomat_collection() -> str:
         if _TECNOMAT_COLLECTION_CACHE:
             return _TECNOMAT_COLLECTION_CACHE
             
-        print("🔍 Auto-detecting Tecnomat collection...")
-        html = fetch_html_ghost("https://www.tecnomat.it/")
+        print("🔍 Auto-detecting Tecnomat collection via search page...")
+        # Usiamo una pagina di ricerca per essere sicuri di beccare la versione attiva
+        html = fetch_html_ghost("https://www.tecnomat.it/it/search/?q=trapano")
         
         # Cerchiamo tutte le occorrenze del pattern tm_prod_products_1_ seguito da numeri
         matches = re.findall(r'tm_prod_products_1_(\d+)', html)
         if matches:
-            # Prendiamo il numero più alto trovato (presumibilmente il più recente)
+            # Prendiamo il numero più alto trovato
             highest_version = max(int(v) for v in matches)
             col = f"tm_prod_products_1_{highest_version}"
             _TECNOMAT_COLLECTION_CACHE = col
-            print(f"✅ Trovata collection più recente: {col}")
+            print(f"✅ Trovata collection attiva: {col} ({len(matches)} matches)")
             return col
             
         # Fallback se non troviamo nulla
