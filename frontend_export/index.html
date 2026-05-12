@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ricerca Prodotti | Nikituttofare</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <div class="app-container">
+        <header class="search-header glass-panel">
+            <h1 class="gradient-text">Ricerca Prodotti Locali</h1>
+            <p class="subtitle">Disponibilità in tempo reale a Rimini e dintorni</p>
+            
+            <form id="searchForm" class="search-form">
+                <div class="search-bar">
+                    <i data-lucide="search" class="icon-search"></i>
+                    <input type="text" id="searchInput" placeholder="Cosa ti serve oggi? (es. trapano, silicone...)" required>
+                    <button type="submit" id="searchBtn" class="btn-primary">Cerca</button>
+                </div>
+                
+                <div class="filters">
+                    <div class="filter-group">
+                        <label for="negozioSelect">Negozio:</label>
+                        <select id="negozioSelect" class="custom-select">
+                            <option value="mix" selected>Tutti i Negozi</option>
+                            <option value="tecnomat">Solo Tecnomat</option>
+                            <option value="leroy">Solo Leroy Merlin</option>
+                        </select>
+                    </div>
+                    
+                    <div class="filter-toggle">
+                        <label class="switch">
+                            <input type="checkbox" id="sortPrice">
+                            <span class="slider round"></span>
+                        </label>
+                        <span>Ordina per Prezzo</span>
+                    </div>
+                </div>
+            </form>
+        </header>
+
+        <main class="results-container">
+            <div id="loader" class="loader-wrapper hidden">
+                <div class="spinner"></div>
+                <p>Ricerca in corso nei sistemi... <br><small>Bypass firewall in atto 🚀</small></p>
+            </div>
+
+            <div id="resultsGrid" class="results-grid">
+                <!-- Le card dei prodotti verranno iniettate qui -->
+            </div>
+            
+            <div id="emptyState" class="empty-state">
+                <i data-lucide="package-search" class="icon-empty"></i>
+                <p>Inserisci un prodotto per iniziare la ricerca.</p>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        // Inizializza le icone
+        lucide.createIcons();
+    </script>
+</body>
+</html>

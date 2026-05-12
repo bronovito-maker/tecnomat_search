@@ -1,0 +1,5 @@
+fastapi==0.110.0
+uvicorn==0.28.0
+curl-cffi==0.7.4
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1

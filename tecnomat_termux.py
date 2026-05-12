@@ -8,8 +8,10 @@ import time
 import subprocess
 import urllib.parse
 import urllib.request
+import random
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from curl_cffi import requests as curl_requests
@@ -21,18 +23,16 @@ try:
 except ImportError:
     BeautifulSoup = None
 
-
-DEFAULT_PER_PAGE = 10
-
+DEFAULT_PER_PAGE = 5
 
 def print_quick_tips() -> None:
-    print("Suggerimenti rapidi:")
+    print("\nSuggerimenti rapidi:")
     print('  tecnomat "silicone bagno"')
-    print('  tecnomat -n 20 "trapano"')
+    print('  tecnomat -n 10 "trapano"')
+    print('  tecnomat --negozio leroy "trapano"')
     print('  tecnomat --show-zero-stock "trapano"')
-    print("  tecnomat -h")
-    print("")
-
+    print('  tecnomat --sort-price "trapano"')
+    print("  tecnomat -h\n")
 
 def load_dotenv(path: str) -> None:
     if not os.path.exists(path):
@@ -48,7 +48,6 @@ def load_dotenv(path: str) -> None:
             if key and key not in os.environ:
                 os.environ[key] = value
 
-
 def env(name: str, required: bool = True, default: str = "") -> str:
     value = os.getenv(name, default).strip()
     if required and not value:
@@ -56,186 +55,29 @@ def env(name: str, required: bool = True, default: str = "") -> str:
         sys.exit(1)
     return value
 
-
-def build_url(
-    base_url: str,
-    collection: str,
-    query: str,
-    per_page: int,
-    page: int = 1,
-    query_by: str = "name",
-    filter_by: str = "",
-) -> str:
-    base = base_url.rstrip("/")
-    path = f"/collections/{collection}/documents/search"
-    params = {
-        "q": query,
-        "query_by": query_by,
-        "per_page": str(per_page),
-        "page": str(page),
-    }
-    if filter_by:
-        params["filter_by"] = filter_by
-    return f"{base}{path}?{urllib.parse.urlencode(params)}"
-
-
-def fetch_typesense(url: str, api_key: str) -> Dict[str, Any]:
-    req = urllib.request.Request(
-        url,
-        method="GET",
-        headers={
-            "X-TYPESENSE-API-KEY": api_key,
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body)
-    except urllib.error.HTTPError as e:
-        try:
-            details = e.read().decode("utf-8")
-        except Exception:
-            details = str(e)
-        print(f"Errore HTTP {e.code}: {details}")
-        sys.exit(2)
-    except Exception as e:
-        print(f"Errore durante la ricerca: {e}")
-        sys.exit(2)
-
-
-def pick_first(document: Dict[str, Any], keys: List[str], default: Any = "N/D") -> Any:
-    for key in keys:
-        if key in document and document[key] not in (None, ""):
-            return document[key]
-    return default
-
-
-def parse_json_if_string(value: Any) -> Any:
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except Exception:
-            return value
-    return value
-
-
-def get_nested_value(obj: Any, path: List[str]) -> Any:
-    cur = obj
-    for part in path:
-        if isinstance(cur, dict) and part in cur:
-            cur = cur[part]
-            continue
-        return None
-    return cur
-
-
 def format_eur(value: Any) -> str:
     try:
         amount = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return str(value)
     text = f"{amount:.2f}".replace(".", ",")
-    return f"EUR {text}"
+    return f"€ {text}"
 
+def parse_price(price_str: str) -> float:
+    """Estrae un valore numerico float da una stringa prezzo per l'ordinamento."""
+    if not price_str or price_str == "N/D":
+        return float('inf')
+    try:
+        # Rimuove tutto tranne numeri e virgola/punto
+        clean = re.sub(r'[^\d,\.]', '', price_str).replace(',', '.')
+        return float(clean)
+    except:
+        return float('inf')
 
-def extract_price(document: Dict[str, Any]) -> str:
-    price_obj = document.get("price")
-    if isinstance(price_obj, dict):
-        eur = price_obj.get("EUR")
-        if isinstance(eur, dict):
-            for key in ["default_formated", "group_6_formated"]:
-                if eur.get(key):
-                    return str(eur[key])
-            for key in ["default", "group_6"]:
-                if key in eur and eur[key] not in (None, ""):
-                    return format_eur(eur[key])
-    seller = document.get("seller_offer_116")
-    if isinstance(seller, dict) and seller.get("price") not in (None, ""):
-        return format_eur(seller["price"])
-    return str(pick_first(document, ["price", "prezzo", "prezzo_vendita"]))
-
-
-def extract_quantity(document: Dict[str, Any]) -> str:
-    seller = document.get("seller_offer_116")
-    if isinstance(seller, dict) and seller.get("qty") not in (None, ""):
-        return str(seller["qty"])
-    return str(
-        pick_first(
-            document,
-            [
-                "stock_store",
-                "stock",
-                "qty",
-                "quantita_disponibile",
-                "disponibilita",
-            ],
-        )
-    )
-
-
-def parse_quantity_value(document: Dict[str, Any]) -> int:
-    seller = document.get("seller_offer_116")
-    if isinstance(seller, dict) and seller.get("qty") not in (None, ""):
-        try:
-            return int(float(str(seller["qty"])))
-        except Exception:
-            return -1
-    for key in ["stock_store", "stock", "qty", "quantita_disponibile"]:
-        value = document.get(key)
-        if value not in (None, ""):
-            try:
-                return int(float(str(value)))
-            except Exception:
-                continue
-    return -1
-
-
-def extract_aisle(document: Dict[str, Any], store_slug: str) -> str:
-    direct = [
-        f"corsia_{store_slug}",
-        f"aisle_{store_slug}",
-        "corsia",
-        "aisle",
-        "aisle_number",
-        "location_aisle",
-        "scaffale",
-    ]
-    aisle = pick_first(document, direct, default="")
-    if aisle not in ("", "N/D", None):
-        return str(aisle)
-
-    nested_paths = [
-        ["store_specific_data", store_slug, "location_aisle"],
-        ["store_specific_data", store_slug, "aisle_number"],
-        ["availability_by_store", store_slug, "location_aisle"],
-        ["availability_by_store", store_slug, "aisle_number"],
-        ["stores", store_slug, "location_aisle"],
-        ["stores", store_slug, "aisle_number"],
-    ]
-    for key in ["store_specific_data", "availability_by_store", "stores"]:
-        if key in document:
-            document[key] = parse_json_if_string(document[key])
-    for path in nested_paths:
-        value = get_nested_value(document, path)
-        if value not in (None, ""):
-            return str(value)
-
-    return "Non disponibile nell'indice corrente"
-
-
-def build_store_cookie(base_cookie: str, store_id: str) -> str:
-    parts = []
-    if base_cookie:
-        parts.append(base_cookie.strip().strip(";"))
-    if store_id:
-        parts.append(f"bricoman_retailer_shop_id={store_id}")
-        parts.append(f"bricoman_previous_shop_id={store_id}")
-    return "; ".join([p for p in parts if p])
-
-
-def fetch_product_html(url: str, cookie_header: str = "", retries: int = 2) -> str:
+# --- CORE NETWORK MAGIC (TLS GHOST) ---
+def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeout: int = 15) -> str:
+    """Usa curl_cffi per ingannare DataDome e altri WAF simulando Chrome 120 su Android."""
+    time.sleep(random.uniform(0.5, 1.5))
     base_headers = {
         "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -249,7 +91,8 @@ def fetch_product_html(url: str, cookie_header: str = "", retries: int = 2) -> s
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
     }
-    last_exc: Exception | None = None
+    
+    last_exc = None
     for i in range(retries + 1):
         headers = dict(base_headers)
         if cookie_header:
@@ -257,304 +100,241 @@ def fetch_product_html(url: str, cookie_header: str = "", retries: int = 2) -> s
             
         try:
             if curl_requests:
-                # Il Fantasma TLS: bypass DataDome impersonando Chrome 110
-                response = curl_requests.get(url, headers=headers, impersonate="chrome110", timeout=15)
+                response = curl_requests.get(url, headers=headers, impersonate="chrome120", timeout=timeout)
                 if response.status_code == 200:
                     return response.text
+                elif response.status_code == 410: # Spesso usato per contenuti rimossi o bot blocks
+                    raise RuntimeError(f"HTTP 410 (Blocked or Gone)")
                 else:
                     raise RuntimeError(f"HTTP {response.status_code}")
             else:
-                # Fallback standard se curl_cffi non è installato
+                print("Debug: curl_cffi non trovato, uso urllib (rischio ban elevato)")
                 req = urllib.request.Request(url, method="GET", headers=headers)
-                with urllib.request.urlopen(req, timeout=15) as response:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
                     return response.read().decode("utf-8", errors="replace")
         except Exception as e:
             last_exc = e
             if i < retries:
-                time.sleep(0.5)
+                time.sleep(1.0)
                 continue
             raise
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Errore sconosciuto fetch_product_html")
+    raise last_exc or RuntimeError("Errore sconosciuto fetch_html_ghost")
 
-
-def extract_pdp_info(html: str) -> tuple[str, str]:
-    # 1. Filtro Antigravity: Controllo indisponibilità totale
-    html_lower = html.lower()
-    if "non è disponibile in questo negozio" in html_lower or "ci dispiace" in html_lower:
-        return "ESAURITO", "0"
-
-    aisle = "Ubicazione non dichiarata nel DOM"
-    stock = ""
-
-    if BeautifulSoup:
-        soup = BeautifulSoup(html, 'html.parser')
+# --- TECNOMAT PROVIDER ---
+def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[str, str]]:
+    try:
+        url_base = env("TYPESENSE_URL")
+        api_key = env("TYPESENSE_API_KEY")
+        collection = env("TYPESENSE_COLLECTION")
+        store_id = env("TECNOMAT_STORE_ID", required=False, default="39")
+        query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
         
-        # Estrai stock reale dal testo HTML
-        text_all = soup.get_text(separator=" ", strip=True)
-        match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', text_all, re.IGNORECASE)
-        if match_stock:
-            stock = match_stock.group(1)
+        ts_url = f"{url_base.rstrip('/')}/collections/{collection}/documents/search"
+        params = {"q": query, "query_by": query_by, "per_page": str(num_results * 3)} # Più risultati per filtrare stock 0
+        full_url = f"{ts_url}?{urllib.parse.urlencode(params)}"
+        
+        req = urllib.request.Request(full_url, headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"})
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        results = []
+        cookie_header = f"bricoman_retailer_shop_id={store_id}; bricoman_previous_shop_id={store_id}"
+        
+        def process_hit(hit):
+            doc = hit.get("document", {})
+            pdp_url = doc.get("product_url") or doc.get("url", "")
             
-        # 2. Caccia all'ubicazione
-        clean_text = ""
-        
-        # Metodo A: via tag specifici 'value'
-        val_divs = soup.find_all('div', class_=re.compile(r'elem-label__value'))
-        for val_div in val_divs:
-            t = val_div.get_text(separator=" ", strip=True)
-            if re.search(r'(Corsia|Reparto|Utensileria|Edilizia|Falegnameria|Piastrelle|Sanitari)', t, re.IGNORECASE):
-                clean_text = t
-                break
+            price = "N/D"
+            price_obj = doc.get("price", {})
+            if isinstance(price_obj, dict) and price_obj.get("EUR"):
+                price = format_eur(price_obj["EUR"].get("default", 0))
+
+            aisle = str(doc.get("aisle", "Ubicazione non trovata"))
+            stock = "0"
+            
+            if pdp_url:
+                try:
+                    # Timeout breve e zero retries: se il PDP non risponde subito, usiamo il fallback
+                    html = fetch_html_ghost(pdp_url, cookie_header=cookie_header, retries=0, timeout=5)
+                    html_lower = html.lower()
+                    
+                    if "non è disponibile in questo negozio" in html_lower:
+                        return None
+                        
+                    if BeautifulSoup:
+                        soup = BeautifulSoup(html, 'html.parser')
+                        text_all = soup.get_text(separator=" ", strip=True)
+                        
+                        match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', text_all, re.IGNORECASE)
+                        if match_stock:
+                            stock = match_stock.group(1)
+                            
+                        match_bf = re.search(r'(Corsia\s+[A-Za-z0-9]+|Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro)|Reparto\s+[A-Za-z0-9\s]+|UTENSILERIA|EDILIZIA|FALEGNAMERIA|PIASTRELLE|SANITARI)', text_all, re.IGNORECASE)
+                        if match_bf:
+                            raw_aisle = match_bf.group(1).strip()
+                            raw_aisle = re.sub(r'\s+', ' ', raw_aisle)
+                            aisle = raw_aisle.title()
+                except Exception:
+                    # Fallback sui dati Typesense se il PDP fallisce
+                    stock = str(doc.get("stock_store", "0"))
+                    
+            if not show_zero and stock == "0":
+                return None
                 
-        # Metodo B: brute force testuale
-        if not clean_text:
-            match_bf = re.search(r'(Corsia\s+[A-Za-z0-9]+|Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro)|Reparto\s+[A-Za-z0-9\s]+|UTENSILERIA|EDILIZIA|FALEGNAMERIA|PIASTRELLE|SANITARI)', text_all, re.IGNORECASE)
-            if match_bf:
-                clean_text = match_bf.group(1)
+            return {
+                "source": "TECNOMAT",
+                "name": doc.get("name", "Prodotto Sconosciuto"),
+                "price": price,
+                "stock": stock,
+                "location": aisle,
+                "url": pdp_url
+            }
 
-        if clean_text:
-            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-            
-            # Caso 1: Corsia X
-            match_corsia = re.search(r'(Corsia\s+[A-Za-z0-9]+)', clean_text, re.IGNORECASE)
-            if match_corsia:
-                aisle = match_corsia.group(1).title()
-            else:
-                # Caso 2: Reparto X + Perimetro SX/DX/destro/sinistro
-                match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro))', clean_text, re.IGNORECASE)
-                if match_perimetro:
-                    aisle = match_perimetro.group(1).title()
-                else:
-                    # Caso 3: Reparto X (da solo)
-                    match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', clean_text, re.IGNORECASE)
-                    if match_reparto:
-                        aisle = match_reparto.group(1).title().strip()
-                    else:
-                        # Caso 4: Chiavi isolate senza "Reparto"
-                        match_isolato = re.search(r'(utensileria|edilizia|falegnameria|piastrelle|sanitari)', clean_text, re.IGNORECASE)
-                        if match_isolato:
-                            aisle = f"Reparto {match_isolato.group(1).title()}"
-                        else:
-                            aisle = clean_text.title()
-
-        return aisle, stock
-
-    # Fallback regex se BeautifulSoup non è installato
-    match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', html, re.IGNORECASE)
-    if match_stock:
-        stock = match_stock.group(1)
-
-    lane_block = re.search(
-        r'<div[^>]*class="[^"]*product-heading-lane[^"]*"[^>]*>(.*?)</div>\s*</div>',
-        html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    scope = lane_block.group(1) if lane_block else html
-
-    match_corsia = re.search(r"(Corsia\s+[A-Za-z0-9]+)", scope, flags=re.IGNORECASE)
-    if match_corsia:
-        aisle = match_corsia.group(1).title()
-    else:
-        match_perimetro = re.search(r'(Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro))', scope, flags=re.IGNORECASE)
-        if match_perimetro:
-            aisle = match_perimetro.group(1).title()
-        else:
-            match_reparto = re.search(r'(Reparto\s+[A-Za-z0-9\s]+)', scope, flags=re.IGNORECASE)
-            if match_reparto:
-                aisle = match_reparto.group(1).title().strip()
-            else:
-                match_isolato = re.search(r'(utensileria|edilizia|falegnameria|piastrelle|sanitari)', scope, flags=re.IGNORECASE)
-                if match_isolato:
-                    aisle = f"Reparto {match_isolato.group(1).title()}"
-                else:
-                    aisle = "Ubicazione non trovata"
-
-    return aisle, stock
-
-
-def resolve_aisle_with_html_fallback(document: Dict[str, Any], store_slug: str, cookie_header: str = "") -> str:
-    aisle = extract_aisle(document, store_slug)
-    if aisle != "Non disponibile nell'indice corrente":
-        return aisle
-
-    url = str(pick_first(document, ["url", "product_url", "link"], default="")).strip()
-    if not url:
-        return aisle
-
-    try:
-        html = fetch_product_html(url, cookie_header=cookie_header)
-        parsed, _ = extract_pdp_info(html)
-        if parsed:
-            return parsed
-    except Exception:
-        return aisle
-
-    return aisle
-
-
-def resolve_pdp_data(document: Dict[str, Any], cookie_header: str = "") -> tuple[str, str]:
-    url = str(pick_first(document, ["url", "product_url", "link"], default="")).strip()
-    if not url:
-        return "URL prodotto non disponibile", ""
-    try:
-        html = fetch_product_html(url, cookie_header=cookie_header)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # Sottomettiamo tutti i task
+            futures = [executor.submit(process_hit, hit) for hit in data.get("hits", [])]
+            for future in futures:
+                res = future.result() # Manteniamo l'ordine originale di Typesense (rilevanza)
+                if res:
+                    results.append(res)
+                if len(results) >= num_results:
+                    break
+                    
+        return results
     except Exception as e:
-        return f"Non disponibile (errore fetch PDP: {e})", ""
+        print(f"Debug Tecnomat Error: {e}")
+        return []
 
-    return extract_pdp_info(html)
+# --- LEROY MERLIN PROVIDER ---
+def search_leroy_merlin(query: str, num_results: int, show_zero: bool) -> List[Dict[str, Any]]:
+    try:
+        base_url = env("LEROY_MERLIN_BASE_URL", required=False, default="https://www.leroymerlin.it")
+        store_id = env("LEROY_MERLIN_STORE_ID", required=False, default="11")
+        
+        search_url = f"{base_url}/search?q={urllib.parse.quote(query)}"
+        cookie_header = f"lmit_store_id={store_id}"
+        
+        html = fetch_html_ghost(search_url, cookie_header=cookie_header)
+            
+        results = []
+        if BeautifulSoup:
+            soup = BeautifulSoup(html, 'html.parser')
+            # Selettori verificati: Leroy Merlin usa molto 'article' per i prodotti
+            items = soup.find_all('article', class_=re.compile(r'o-thumbnail|product-card|plp-product-card'))
+            
+            if not items:
+                # Fallback su div se article fallisce
+                items = soup.select('div[class*="product-card"]')
 
+            for item in items:
+                name_tag = item.find(['a', 'span', 'h3'], class_=re.compile(r'a-designation|product-name|title'))
+                price_container = item.find(class_=re.compile(r'm-price|price-infos|amount|price'))
+                stock_tag = item.find(class_=re.compile(r'stock-status|availability'))
+                link_tag = item.find('a', href=True)
+                
+                if name_tag and link_tag:
+                    name = name_tag.get_text(strip=True)
+                    if len(name) < 5: continue
+                    
+                    price = "N/D"
+                    if price_container:
+                        price_text = price_container.get_text(" ", strip=True)
+                        raw_price = re.sub(r'\s+', ' ', price_text).replace(" ,", ",").strip()
+                        
+                        # Estraiamo solo l'ultimo prezzo valido (esclude prezzi barrati precedenti)
+                        matches = re.findall(r'[\d\.,]+\s*€', raw_price)
+                        if matches:
+                            price = matches[-1].strip()
+                            if not price.startswith("€"):
+                                price = f"€ {price.replace('€', '').strip()}"
+                        else:
+                            price = raw_price
+                            if "€" not in price: price = f"€ {price}"
+                        
+                    stock_text = stock_tag.get_text(strip=True) if stock_tag else "Vedi sito"
+                    
+                    item_text = item.get_text(" ", strip=True)
+                    # Escludiamo prodotti Marketplace o non direttamente venduti da Leroy Merlin
+                    is_marketplace = "Venduto da LEROY MERLIN" not in item_text
+                    
+                    # Consideriamo "zero stock" tutto ciò che non è ritirabile subito
+                    is_zero = is_marketplace or any(x in stock_text.lower() for x in [
+                        "non disponibile", "esaurito", "giorni", 
+                        "consegna", "domicilio", "spedito"
+                    ])
+                    
+                    if not show_zero and is_zero:
+                        continue
+                        
+                    results.append({
+                        "source": "LEROY MERLIN",
+                        "name": name,
+                        "price": price,
+                        "stock": stock_text,
+                        "location": "Vedi sito web",
+                        "url": urllib.parse.urljoin(base_url, link_tag['href'])
+                    })
+                    
+                if len(results) >= num_results:
+                    break
+        return results
+    except Exception as e:
+        return []
 
-def format_product(document: Dict[str, Any], store_slug: str, aisle: str) -> str:
-    name = pick_first(document, ["name", "nome"])
-    price = extract_price(document)
-    qty = document.get("stock_pdp") or extract_quantity(document)
-
-    url = pick_first(document, ["url", "product_url", "link"], default="")
-
-    lines = [
-        f"- Nome: {name}",
-        f"  Prezzo: {price}",
-        f"  Quantita in negozio: {qty}",
-        f"  Corsia ({store_slug.title()}): {aisle}",
-    ]
-    if url:
-        lines.append(f"  URL: {url}")
-
-    return "\n".join(lines)
-
-
+# --- MAIN ENGINE ---
 def main() -> None:
-    # Priority:
-    # 1) repo-local .env
-    # 2) persistent user config ~/.config/tecnomat/.env
     load_dotenv(".env")
     load_dotenv(os.path.expanduser("~/.config/tecnomat/.env"))
-    parser = argparse.ArgumentParser(description="Ricerca prodotti Tecnomat via Typesense")
-    parser.add_argument("query", nargs="*", help='Testo da cercare, es: "trapano avvitatore"')
-    parser.add_argument(
-        "-n",
-        "--num-results",
-        type=int,
-        default=DEFAULT_PER_PAGE,
-        help=f"Numero massimo risultati (default: {DEFAULT_PER_PAGE})",
-    )
-    parser.add_argument(
-        "--show-zero-stock",
-        action="store_true",
-        help="Mostra anche prodotti con quantita disponibile uguale a 0",
-    )
-    parser.add_argument(
-        "--debug-fields",
-        action="store_true",
-        help="Stampa il JSON raw del primo hit per ispezionare i campi reali dell'indice",
-    )
-    parser.add_argument(
-        "--resolve-aisle-html",
-        action="store_true",
-        help="Se la corsia non e in Typesense, prova a estrarla dalla pagina prodotto (SSR)",
-    )
+    
+    parser = argparse.ArgumentParser(description="Multi-Scraper per Tecnomat & Leroy Merlin (Bypass DataDome integrato)")
+    parser.add_argument("query", nargs="*", help='Testo da cercare')
+    parser.add_argument("-n", "--num-results", type=int, default=DEFAULT_PER_PAGE, help=f"Risultati per negozio")
+    parser.add_argument("--show-zero-stock", action="store_true", help="Mostra anche prodotti esauriti")
+    parser.add_argument("--sort-price", action="store_true", help="Ordina tutti i risultati per prezzo")
+    parser.add_argument("--negozio", choices=["tecnomat", "leroy", "mix"], default="mix", help="Filtra la ricerca per negozio: tecnomat, leroy o mix (default: mix)")
     args = parser.parse_args()
 
-    per_page = max(1, min(args.num_results, 50))
-    fetch_per_page = min(50, max(per_page, 20))
     query = " ".join(args.query).strip()
-
     if not query:
-        if "PREFIX" in os.environ and "com.termux" in os.environ.get("PREFIX", ""):
-            try:
-                res = subprocess.run(
-                    ["termux-dialog", "text", "-t", "Cerca in Tecnomat", "-i", "Es: trapano"],
-                    capture_output=True, text=True, check=True
-                )
-                dialog_out = json.loads(res.stdout)
-                query = dialog_out.get("text", "").strip()
-            except Exception:
-                pass
+        try: query = input("Inserisci il prodotto da cercare: ").strip()
+        except: sys.exit(0)
+            
+    if not query:
+        sys.exit(1)
+
+    print(f"\nCercando '{query}' a Rimini e dintorni...\n")
+
+    all_results = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = []
+        if args.negozio in ["tecnomat", "mix"]:
+            futures.append(executor.submit(search_tecnomat, query, args.num_results, args.show_zero_stock))
+        if args.negozio in ["leroy", "mix"]:
+            futures.append(executor.submit(search_leroy_merlin, query, args.num_results, args.show_zero_stock))
         
-        if not query:
-            try:
-                query = input("Inserisci il prodotto da cercare: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                sys.exit(0)
-                
-        if not query:
-            print("Nessun termine di ricerca fornito. Uscita.")
-            sys.exit(1)
+        for future in as_completed(futures):
+            all_results.extend(future.result())
 
-    typesense_url = env("TYPESENSE_URL")
-    typesense_key = env("TYPESENSE_API_KEY")
-    typesense_collection = env("TYPESENSE_COLLECTION")
-    store_slug = env("TECNOMAT_STORE_SLUG", required=False, default="rimini")
-    query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
-    filter_by = env("TYPESENSE_FILTER_BY", required=False, default="")
-    store_cookie = env("TECNOMAT_STORE_COOKIE", required=False, default="")
-    store_id = env("TECNOMAT_STORE_ID", required=False, default="")
-    effective_cookie = build_store_cookie(store_cookie, store_id)
-
-    valid_products_found = 0
-    first_hit_doc = None
-    print(f"Risultati per: {query}\n")
-
-    max_pages = 10
-    for page in range(1, max_pages + 1):
-        url = build_url(
-            typesense_url,
-            typesense_collection,
-            query,
-            fetch_per_page,
-            page=page,
-            query_by=query_by,
-            filter_by=filter_by,
-        )
-        payload = fetch_typesense(url, typesense_key)
-        page_hits = payload.get("hits", [])
-        if not page_hits:
-            break
-            
-        for hit in page_hits:
-            doc = hit.get("document", {})
-            if not args.show_zero_stock and parse_quantity_value(doc) == 0:
-                continue
-                
-            # Fonte primaria: PDP SSR (piu stabile del solo indice Typesense per la corsia)
-            aisle, stock_pdp = resolve_pdp_data(doc, cookie_header=effective_cookie)
-            
-            # Filtro invisibile: nascondi i prodotti esauriti dallo stdout di Termux
-            if aisle == "ESAURITO":
-                continue
-                
-            if stock_pdp:
-                if not args.show_zero_stock and stock_pdp == "0":
-                    continue
-                doc["stock_pdp"] = stock_pdp
-                
-            if valid_products_found == 0 and args.debug_fields:
-                first_hit_doc = doc
-                
-            valid_products_found += 1
-            print(f"{valid_products_found}. {format_product(doc, store_slug, aisle)}\n")
-            
-            if valid_products_found >= per_page:
-                break
-                
-        if valid_products_found >= per_page:
-            break
-
-    if valid_products_found == 0:
-        print("Nessun prodotto disponibile in negozio trovato.")
-        print("")
-        print_quick_tips()
-        return
-
-    if args.debug_fields and first_hit_doc:
-        print("--- DEBUG FIRST HIT (RAW DOCUMENT) ---")
-        print(json.dumps(first_hit_doc, ensure_ascii=False, indent=2, sort_keys=True))
-        print("--- END DEBUG ---")
+    if not all_results:
+        print("Nessun risultato trovato.")
+    else:
+        if args.sort_price:
+            all_results.sort(key=lambda x: parse_price(x["price"]))
+        else:
+            # Raggruppa per fonte di default
+            all_results.sort(key=lambda x: 0 if x["source"] == "TECNOMAT" else 1)
+        
+        for prod in all_results:
+            print(f"[{prod['source']}] {prod['name']}")
+            print(f"  Prezzo: {prod['price']}")
+            print(f"  Stock:  {prod['stock']}")
+            if prod['source'] != "LEROY MERLIN":
+                print(f"  Ubicaz: {prod['location']}")
+            print(f"  Link:   {prod['url']}")
+            print("-" * 40)
 
     print_quick_tips()
-
 
 if __name__ == "__main__":
     main()
