@@ -132,29 +132,29 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
 # Cache globale per la collezione Tecnomat
 _TECNOMAT_COLLECTION_CACHE = None
 
-def discover_tecnomat_collection() -> str:
-    """La Sonda: Estrazione chirurgica della collection attiva di Tecnomat."""
+def discover_tecnomat_collection(url_base: str, api_key: str) -> str:
+    """Fast-Probe ENI: Interroga direttamente il cluster Typesense bypassando il sito."""
     global _TECNOMAT_COLLECTION_CACHE
     if _TECNOMAT_COLLECTION_CACHE:
         return _TECNOMAT_COLLECTION_CACHE
         
-    try:
-        print("🔍 Sonda ENI: Intercettazione ID dinamico...")
-        # Puntiamo alla pagina di ricerca che contiene la configurazione live
-        html = fetch_html_ghost("https://www.tecnomat.it/it/search/?q=search", timeout=5)
-        
-        # La Regex 'Sonda' cerca il pattern esatto usato da Typesense
-        match = re.search(r'tm_prod_products_\d+_\d+', html)
-        if match:
-            col = match.group(0)
-            _TECNOMAT_COLLECTION_CACHE = col
-            print(f"✅ Sonda ha intercettato il target: {col}")
-            return col
+    print("🔍 Fast-Probe ENI: Scansione bare-metal del cluster...")
+    
+    # Sonda rapida: cerchiamo l'indice più alto disponibile tra 135 e 129
+    for i in range(135, 128, -1):
+        url = f"{url_base.rstrip('/')}/collections/tm_prod_products_1_{i}/documents/search?q=test&per_page=1"
+        try:
+            req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": api_key, "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=1.5) as response:
+                if response.status == 200:
+                    col = f"tm_prod_products_1_{i}"
+                    _TECNOMAT_COLLECTION_CACHE = col
+                    print(f"✅ Fast-Probe ha intercettato l'indice attivo più recente: {col}")
+                    return col
+        except:
+            continue
             
-    except Exception as e:
-        print(f"⚠️ Interferenza nella Sonda: {e}")
-        
-    # Fallback stabile verificato
+    # Fallback estremo
     return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
 
 # --- TECNOMAT PROVIDER ---
@@ -165,10 +165,10 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
         url_base = env("TYPESENSE_URL")
         api_key = env("TYPESENSE_API_KEY")
         store_id = env("TECNOMAT_STORE_ID", required=False, default="39")
-        query_by = env("TYPESENSE_QUERY_BY", required=False, default="name")
+        query_by = env("TYPESENSE_QUERY_BY", required=False, default="name,sku,brand,categories")
         
-        # Auto-discovery della collection (La Sonda)
-        collection = discover_tecnomat_collection()
+        # Auto-discovery della collection (Fast-Probe ENI)
+        collection = discover_tecnomat_collection(url_base, api_key)
         params = {"q": query, "query_by": query_by, "per_page": str(num_results * 3)} # Più risultati per filtrare stock 0
 
         def run_typesense_search(collection_name: str) -> Dict[str, Any]:
