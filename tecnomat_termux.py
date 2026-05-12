@@ -201,18 +201,17 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
             nonlocal dropped_zero_stock, pdp_failures, unavailable_store
             doc = hit.get("document", {})
             pdp_url = doc.get("product_url") or doc.get("url", "")
-            
             price = "N/D"
-            price_obj = doc.get("price", {})
+            price_obj = hit.get("document", {}).get("price", {})
             if isinstance(price_obj, dict) and price_obj.get("EUR"):
                 price = format_eur(price_obj["EUR"].get("default", 0))
-
+            
             aisle = str(doc.get("aisle", "Ubicazione non trovata"))
             stock = "0"
             
             if pdp_url:
                 try:
-                    # Timeout breve e zero retries: se il PDP non risponde subito, usiamo il fallback
+                    # Timeout breve e zero retries
                     html = fetch_html_ghost(pdp_url, cookie_header=cookie_header, retries=0, timeout=5)
                     html_lower = html.lower()
                     
@@ -223,17 +222,35 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
                         
                     if BeautifulSoup:
                         soup = BeautifulSoup(html, 'html.parser')
-                        text_all = soup.get_text(separator=" ", strip=True)
                         
-                        match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', text_all, re.IGNORECASE)
+                        # --- 1. Estrazione Prezzo (Standard o Stock) ---
+                        # Se il prezzo finora è "€ 0,00" o "N/D", cerchiamo nella pagina (specialmente Prezzo Stock)
+                        if price in ["€ 0,00", "N/D"]:
+                            price_stock_elem = soup.select_one('.bm_product-info-price__wrapper-value--stock-price [data-price-amount]')
+                            if price_stock_elem and price_stock_elem.get('data-price-amount'):
+                                price = format_eur(float(price_stock_elem['data-price-amount']))
+                            else:
+                                price_std_elem = soup.select_one('.price-wrapper[data-price-amount]')
+                                if price_std_elem and price_std_elem.get('data-price-amount'):
+                                    price = format_eur(float(price_std_elem['data-price-amount']))
+                        
+                        # --- 2. Estrazione Ubicazione (Reparto/Corsia) ---
+                        loc_elem = soup.select_one('.product-heading__elem-label.division .product-heading__elem-label__value')
+                        if loc_elem:
+                            raw_aisle = loc_elem.get_text(strip=True)
+                            aisle = raw_aisle.replace("Reparto ", "").replace("Corsia ", "").strip().title()
+                        else:
+                            text_all = soup.get_text(separator=" ", strip=True)
+                            match_bf = re.search(r'Reparto\s+([^-]+)(?:\s*-\s*Corsia\s*(\d+))?', text_all, re.IGNORECASE)
+                            if match_bf:
+                                aisle = match_bf.group(1).strip().title()
+                                if match_bf.group(2):
+                                    aisle += f" - Corsia {match_bf.group(2)}"
+                        
+                        # --- 3. Estrazione Stock ---
+                        match_stock = re.search(r'Disponibilità in negozio[^\d]*(\d+)', soup.get_text(), re.IGNORECASE)
                         if match_stock:
                             stock = match_stock.group(1)
-                            
-                        match_bf = re.search(r'(Corsia\s+[A-Za-z0-9]+|Reparto\s+.*?Perimetro\s+(?:[SD]X|destro|sinistro)|Reparto\s+[A-Za-z0-9\s]+|UTENSILERIA|EDILIZIA|FALEGNAMERIA|PIASTRELLE|SANITARI)', text_all, re.IGNORECASE)
-                        if match_bf:
-                            raw_aisle = match_bf.group(1).strip()
-                            raw_aisle = re.sub(r'\s+', ' ', raw_aisle)
-                            aisle = raw_aisle.title()
                 except Exception:
                     # Fallback sui dati Typesense se il PDP fallisce
                     with counters_lock:
