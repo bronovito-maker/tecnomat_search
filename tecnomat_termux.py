@@ -165,7 +165,8 @@ def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[
         url_base = env("TYPESENSE_URL")
         api_key = env("TYPESENSE_API_KEY")
         store_id = env("TECNOMAT_STORE_ID", required=False, default="39")
-        query_by = env("TYPESENSE_QUERY_BY", required=False, default="name,sku,brand,categories")
+        # Forziamo i campi corretti ignorando env obsoleti che causano 404
+        query_by = "name,sku,brand,categories"
         
         # Auto-discovery della collection (Fast-Probe ENI)
         collection = discover_tecnomat_collection(url_base, api_key)
