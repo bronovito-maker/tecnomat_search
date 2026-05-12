@@ -124,50 +124,27 @@ def fetch_html_ghost(url: str, cookie_header: str = "", retries: int = 2, timeou
 _TECNOMAT_COLLECTION_CACHE = None
 
 def discover_tecnomat_collection() -> str:
-    """Radar avanzato per trovare la vera collection attiva di Tecnomat."""
+    """Versione rapida e ottimizzata per trovare la collection Tecnomat."""
     global _TECNOMAT_COLLECTION_CACHE
+    if _TECNOMAT_COLLECTION_CACHE:
+        return _TECNOMAT_COLLECTION_CACHE
+        
+    # Default stabile verificato oggi
+    current_fallback = "tm_prod_products_1_129"
+    
     try:
-        if _TECNOMAT_COLLECTION_CACHE:
-            return _TECNOMAT_COLLECTION_CACHE
-            
-        print("🔍 Radar ENI: Scansione profonda collection Tecnomat...")
-        html = fetch_html_ghost("https://www.tecnomat.it/")
-        
-        # Cerchiamo tutti i numeri di versione
-        versions = re.findall(r'tm_prod_products_1_(\d+)', html)
-        # Filtriamo le versioni palesemente vecchie (come la 116)
-        valid_versions = [int(v) for v in versions if int(v) > 116]
-        
-        if valid_versions:
-            highest = max(valid_versions)
-            col = f"tm_prod_products_1_{highest}"
+        # Tentativo rapido di scansione (solo se necessario)
+        html = fetch_html_ghost("https://www.tecnomat.it/", timeout=3)
+        matches = re.findall(r'tm_prod_products_1_(\d+)', html)
+        valid = [int(v) for v in matches if int(v) > 116]
+        if valid:
+            col = f"tm_prod_products_1_{max(valid)}"
             _TECNOMAT_COLLECTION_CACHE = col
-            print(f"✅ Radar ha intercettato la vera collection nell'HTML: {col}")
             return col
-            
-        # Se non troviamo nulla di nuovo nell'HTML, cerchiamo nei bundle JS esterni
-        print("📡 Cerco nei bundle Javascript esterni...")
-        script_urls = re.findall(r'src="(https://[^"]+/static/[^"]+\.js)"', html)
+    except:
+        pass
         
-        for s_url in script_urls[:8]: # Scansione dei bundle principali
-            try:
-                js_content = fetch_html_ghost(s_url, timeout=5)
-                js_versions = re.findall(r'tm_prod_products_1_(\d+)', js_content)
-                js_valid = [int(v) for v in js_versions if int(v) > 116]
-                if js_valid:
-                    highest = max(js_valid)
-                    col = f"tm_prod_products_1_{highest}"
-                    _TECNOMAT_COLLECTION_CACHE = col
-                    print(f"✅ Trovata collection nel bundle JS: {col}")
-                    return col
-            except:
-                continue
-
-        # Fallback se tutto fallisce
-        return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
-    except Exception as e:
-        print(f"⚠️ Errore radar ENI: {e}")
-        return os.getenv("TYPESENSE_COLLECTION", "tm_prod_products_1_129")
+    return current_fallback
 
 # --- TECNOMAT PROVIDER ---
 def search_tecnomat(query: str, num_results: int, show_zero: bool) -> List[Dict[str, str]]:

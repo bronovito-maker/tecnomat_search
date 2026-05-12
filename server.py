@@ -42,7 +42,8 @@ def ai_analyze_query(query: str):
     """
     
     try:
-        response = model.generate_content(prompt)
+        # Aggiungiamo un timeout di 5 secondi per l'IA
+        response = model.generate_content(prompt, request_options={"timeout": 5000})
         # Pulizia dell'output per estrarre il JSON (rimuove eventuali markdown ```json)
         text = response.text.strip()
         if "```json" in text:
